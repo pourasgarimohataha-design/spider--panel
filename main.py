@@ -439,18 +439,20 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
     inbound = None
     if inbound_id:
         inbound = INBOUNDS.get(inbound_id)
-    host = SETTINGS.get("domain") or get_host()
+    # Determine proper host for config generation
+    # Priority: inbound external_domain > inbound domain > SETTINGS domain > get_host()
+    host = (inbound.get("external_domain") if inbound else None) or (inbound.get("domain") if inbound else None) or SETTINGS.get("domain") or get_host()
     # Never use 0.0.0.0 or localhost in public configs
     if host in ("0.0.0.0", "127.0.0.1", "localhost", ""):
-        host = inbound.get("domain") if inbound else None or CONFIG.get("host", "") or "SERVER_IP"
-    # Protocol from inbound FIRST, then user, then default
-    protocol = (inbound.get("protocol") if inbound else None) or user.get("protocol", "vless")
+        host = CONFIG.get("host", "") or "SERVER_IP"
+    # Protocol from user FIRST, then inbound, then default
+    protocol = user.get("protocol") or (inbound.get("protocol") if inbound else None) or "vless"
     config_uuid = user.get("config_uuid", "")
     username = user.get("username", user_id)
     remark = quote(f"Spider-{username}")
     sni = user.get("sni") or (inbound.get("sni") if inbound else None) or host
-    # Transport from inbound FIRST (network field), then user field, then default
-    transport_type = (inbound.get("network") if inbound else None) or user.get("transport_type", "ws")
+    # Transport from user FIRST, then inbound, then default
+    transport_type = user.get("transport_type") or (inbound.get("network") if inbound else None) or "ws"
 
     # ── Path: READ-ONLY, from user storage (generated once at creation) ──
     # Priority: inbound ws_settings/xhttp_settings > user stored path > generate+store (legacy)
@@ -511,16 +513,18 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
 
     # ── VLESS ──
     if protocol == "vless":
+        vless_host = inbound.get("external_domain") or inbound.get("domain") or host
+        vless_port = inbound.get("external_port") or inbound.get("port") or 443
         if transport_type == "grpc":
-            params = f"encryption=none&security=tls&type=grpc&serviceName={quote(stored_path, safe='')}&host={quote(host)}&sni={quote(sni)}&fp=chrome&alpn=h2"
-            return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
+            params = f"encryption=none&security=tls&type=grpc&serviceName={quote(stored_path, safe='')}&host={quote(vless_host)}&sni={quote(sni)}&fp=chrome&alpn=h2"
+            return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         elif transport_type == "tcp":
-            params = f"encryption=none&security=tls&type=tcp&host={quote(host)}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1"
-            return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
+            params = f"encryption=none&security=tls&type=tcp&host={quote(vless_host)}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1"
+            return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         elif transport_type == "xhttp":
             extra = quote('{"xPaddingBytes":"100-1000","mode":"auto","scMaxEachPostBytes":"1000000"}', safe='')
-            params = f"encryption=none&security=tls&type=xhttp&host={quote(host)}&path={quote(stored_path, safe='')}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1&mode=auto&extra={extra}"
-            return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
+            params = f"encryption=none&security=tls&type=xhttp&host={quote(vless_host)}&path={quote(stored_path, safe='')}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1&mode=auto&extra={extra}"
+            return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         else:  # ws — user's stored path (generated once at creation)
             ws_host = (inbound.get("domain") if inbound else None) or SETTINGS.get("domain") or host
             ws_sni = sni if sni and sni != host else ws_host
@@ -534,7 +538,9 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
                 "fp=chrome",
                 "alpn=http/1.1",
             ])
-            return f"vless://{config_uuid}@{ws_host}:443?{params}#{remark}"
+            vless_host = inbound.get("external_domain") or inbound.get("domain") or ws_host
+            vless_port = inbound.get("external_port") or inbound.get("port") or 443
+            return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
 
     # ── VMess ──
     elif protocol == "vmess":
@@ -2710,6 +2716,31 @@ async def bulk_create_users(request: Request, _=Depends(require_auth)):
     asyncio.create_task(save_state())
     log_activity("user", f"{count} کاربر به‌صورت انبوه ساخته شد", "ok")
     return {"ok": True, "created_count": len(created), "users": created}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SERVER RESOURCES (neon bars)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/server/resources")
+async def server_resources(_=Depends(require_auth)):
+    """Return live CPU, RAM, Disk, uptime for neon status bars."""
+    try:
+        import psutil
+        return {
+            "cpu_percent": psutil.cpu_percent(interval=0.3),
+            "cpu_count": psutil.cpu_count(),
+            "ram_percent": psutil.virtual_memory().percent,
+            "ram_total_gb": round(psutil.virtual_memory().total / 1024**3, 1),
+            "ram_used_gb": round(psutil.virtual_memory().used / 1024**3, 1),
+            "disk_percent": psutil.disk_usage("/").percent,
+            "disk_total_gb": round(psutil.disk_usage("/").total / 1024**3, 1),
+            "net_sent_mb": round(psutil.net_io_counters().bytes_sent / 1024**2, 1),
+            "net_recv_mb": round(psutil.net_io_counters().bytes_recv / 1024**2, 1),
+            "uptime_seconds": int(time.time() - stats.get("start_time", time.time())),
+        }
+    except ImportError:
+        return {"error": "psutil not installed", "cpu_percent": 0, "ram_percent": 0, "disk_percent": 0}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
