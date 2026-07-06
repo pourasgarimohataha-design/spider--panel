@@ -1640,23 +1640,35 @@ async def subsync_sync_data(request: Request):
 
 @app.get("/sub-sync/sub/{name}")
 async def subsync_get_sub(name: str):
-    """Get configs for a specific sub by name."""
+    """Get configs for a specific sub by name or username."""
+    configs = []
+    host = get_host()
+    
+    # First check SUBS (subscription groups)
     async with SUBS_LOCK:
         sub = next((s for s in SUBS.values() if s.get("name") == name), None)
-    if not sub:
-        raise HTTPException(status_code=404, detail=f"No subscription found for '{name}'")
-    link_ids = sub.get("link_ids", [])
-    async with LINKS_LOCK:
-        snap = dict(LINKS)
-    host = get_host()
-    configs = []
-    for lid in link_ids:
-        link = snap.get(lid)
-        if link and is_link_allowed(link):
-            proto = link.get("protocol", DEFAULT_PROTOCOL)
-            configs.append(generate_vless_link(lid, host, remark=f"Spider-{link['label']}", protocol=proto))
+    if sub:
+        link_ids = sub.get("link_ids", [])
+        async with LINKS_LOCK:
+            snap = dict(LINKS)
+        for lid in link_ids:
+            link = snap.get(lid)
+            if link and is_link_allowed(link):
+                proto = link.get("protocol", DEFAULT_PROTOCOL)
+                configs.append(generate_vless_link(lid, host, remark=f"Spider-{link['label']}", protocol=proto))
+    
+    # Also check USERS — serve user config directly
     if not configs:
-        raise HTTPException(status_code=404, detail=f"No configs for '{name}'")
+        async with USERS_LOCK:
+            user = next(((uid, u) for uid, u in USERS.items() if u.get("username") == name), None)
+        if user:
+            uid, u = user
+            cfg = generate_user_config(uid, u)
+            if cfg:
+                configs.append(cfg)
+    
+    if not configs:
+        raise HTTPException(status_code=404, detail=f"No configs found for '{name}'")
     return Response(content="\n".join(configs), media_type="text/plain; charset=utf-8")
 
 

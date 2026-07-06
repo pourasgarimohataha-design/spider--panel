@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="fa" dir="rtl" data-theme="dark">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Spider Panel v3</title>
 <style>
 :root,
@@ -33,7 +33,7 @@
 [data-theme="light"]:not([data-accent]){--bg:#f5f5f9;--bg2:#fff;--bg3:#e8e8f0;--txt:#1a1a2e;--txt2:#666680;--neon:#d50000;--bg-opacity:0.04;--glow:0 0 20px rgba(255,23,68,.08)}
 [data-theme="light"][data-accent="green"]{--bg:#f0f4f0;--bg2:#fff;--bg3:#e0f0e0;--txt:#0a1a0a;--txt2:#558855;--neon:#0a0;--bg-opacity:0.04;--glow:0 0 24px rgba(0,170,0,.08)}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--txt);overflow-x:hidden}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--txt);overflow-x:hidden}@media(max-width:900px){body{font-size:14px}.btn{padding:8px 12px;font-size:11px}.btn-sm{padding:4px 8px;font-size:10px}td,th{padding:8px 6px;font-size:11px}}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:var(--neon);border-radius:4px}
 
 /* Login */
@@ -61,7 +61,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 /* Layout */
 .app-wrap{display:none;min-height:100vh}
 .app-wrap.active{display:flex}
-.sidebar{width:240px;background:var(--bg2);border-right:1px solid var(--bg3);display:flex;flex-direction:column;position:fixed;top:0;bottom:0;right:0;z-index:100;transition:transform .3s,width .2s}
+.sidebar{width:240px;background:var(--bg2);border-right:1px solid var(--bg3);display:flex;flex-direction:column;position:fixed;top:0;bottom:0;right:0;z-index:100;transition:transform .3s,width .2s;overflow-y:auto}
 .sb-brand{padding:20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--bg3)}
 .sb-brand img{width:36px;height:36px}
 .sb-brand-t{font-size:16px;font-weight:800;letter-spacing:2px}
@@ -104,7 +104,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 a.btn{text-decoration:none}
 
 /* Tables */
-.tbl{overflow-x:auto}
+.tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse}
 th{text-align:right;padding:10px 12px;font-size:11px;color:var(--txt2);font-weight:600;border-bottom:1px solid var(--bg3)}
 td{padding:10px 12px;font-size:13px;border-bottom:1px solid var(--bg3)}
@@ -192,12 +192,12 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <div class="dash-bg-img"></div>
 
   <!-- SIDEBAR -->
+  <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
   <aside class="sidebar" id="sidebar">
     <div class="sb-brand"><img src="/static/spider-logo.png" alt="S" onerror="this.style.display='none'" style="background:transparent;mix-blend-mode:screen"><div><div class="sb-brand-t"><span>S</span>PIDER</div><div class="sb-brand-s">PANEL v3</div></div></div>
     <nav class="sb-nav">
       <div class="nav-item active" onclick="switchTab('dashboard',this)"><span class="nav-ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg></span> داشبورد</div>
       <div class="nav-item" onclick="switchTab('users',this)"><span class="nav-ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2m8-10a4 4 0 100-8 4 4 0 000 8zm13 10v-2a4 4 0 00-3-3.87m-4-12a4 4 0 010 7.75"/></svg></span> کاربران</div>
-      <div class="nav-item" onclick="switchTab('subs',this)"><span class="nav-ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 000 20M12 2a14.5 14.5 0 010 20"/><circle cx="12" cy="12" r="3"/></svg></span> اشتراک‌ها</div>
       <div class="nav-item" onclick="switchTab('spider-ip',this)"><span class="nav-ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 13v8M8 6l-4-4M16 6l4-4M8 14l-4 4M16 14l4 4"/></svg></span> Spider IP</div>
       <div class="nav-item" onclick="switchTab('tools',this)"><span class="nav-ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></span> ابزارها</div>
       <div class="nav-item" onclick="switchTab('settings',this)"><span class="nav-ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000-1.4l-1.1-1.1a1 1 0 00-1.4 0L3.5 12.5a1 1 0 000 1.4l1.1 1.1a1 1 0 001.4 0l8.7-8.7z"/><path d="M14.7 17.7a1 1 0 010 1.4l-1.1 1.1a1 1 0 01-1.4 0L3.5 11.5a1 1 0 010-1.4l1.1-1.1a1 1 0 011.4 0l8.7 8.7z"/></svg></span> تنظیمات</div>
@@ -208,7 +208,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 
   <!-- MAIN -->
   <div class="main-area">
-    <div class="topbar"><div class="topbar-greet" id="grt"></div><div class="topbar-r"><button class="btn btn-p" onclick="openCreateUser()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> کاربر جدید</button><button class="btn btn-g sidebar-tog" onclick="$id('sidebar').classList.toggle('open')" style="display:inline-flex"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button></div></div>
+    <div class="topbar"><div class="topbar-greet" id="grt"></div><div class="topbar-r"><button class="btn btn-p" onclick="openCreateUser()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> کاربر جدید</button><button class="btn btn-g sidebar-tog" onclick="toggleSidebar()" style="display:inline-flex"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button></div></div>
     <div class="content">
 
       <!-- ═══ DASHBOARD ═══ -->
@@ -221,12 +221,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <div id="tab-users" class="tab-content hidden">
         <div class="panel"><div class="panel-h"><span class="glow">مدیریت کاربران</span><button class="btn btn-p btn-sm" onclick="openCreateUser()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> کاربر جدید</button></div><div class="tbl"><table><thead><tr><th>نام</th><th>پروتکل</th><th>مصرف</th><th>اعتبار</th><th>وضعیت</th><th>ساب</th><th>عملیات</th></tr></thead><tbody id="tbl-users2"><tr><td colspan="7"><div class="empty">در حال بارگذاری...</div></td></tr></tbody></table></div></div>
       </div>
-
-      <!-- ═══ SUBS ═══ -->
-      <div id="tab-subs" class="tab-content hidden">
-        <div class="panel"><div class="panel-h"><span class="glow">اشتراک‌ها</span><button class="btn btn-p btn-sm" onclick="openCreateSub()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> اشتراک جدید</button></div><div id="subs-c"><div class="empty">در حال بارگذاری...</div></div></div>
-      </div>
-
       <!-- ═══ SPIDER IP ═══ -->
       <div id="tab-spider-ip" class="tab-content hidden">
         <div class="panel ip-scanner"><div class="panel-h"><span class="glow">🕷️ Spider IP Scanner</span></div>
@@ -315,12 +309,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <button class="btn btn-g" onclick="closeModal('mod-cfg')" style="width:100%;margin-top:8px">بستن</button>
 </div></div>
 
-<div class="modal" id="mod-sub"><div class="modal-c">
-  <div class="modal-t"><span class="glow">ایجاد اشتراک</span></div>
-  <form onsubmit="submitCreateSub(event)"><div class="f-g"><label>نام</label><input type="text" id="cs-name" required></div><div class="f-g"><label>توضیحات</label><input type="text" id="cs-desc"></div>
-    <div class="modal-btns"><button type="button" class="btn btn-g" onclick="closeModal('mod-sub')">انصراف</button><button type="submit" class="btn btn-p" id="cs-submit">ایجاد</button></div></form>
-</div></div>
-
 <div class="toast" id="toast"></div>
 
 <script>
@@ -379,7 +367,7 @@ function renderUsers(){var start=(pgU-1)*PS,page=ALL_U.slice(start,start+PS);
     return '<tr><td><strong>'+esc(u.username)+'</strong></td><td><span class="badge badge-p">'+(u.protocol||'VLESS').toUpperCase()+'</span></td>'+
       '<td><div class="pbar"><div class="pbar-f" style="width:'+pct+'%"></div></div><small>'+fm(used)+' / '+(limit>0?fm(limit):'∞')+'</small></td>'+
       '<td>'+dTxt+'</td><td><span class="badge '+sc+'">'+stxt+'</span></td>'+
-      '<td><a href="/sub/'+u.username+'" target="_blank" class="btn btn-sm btn-b"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg> ساب</a></td>'+
+      '<td><a href="/sub/'+u.username+'" target="_blank" class="btn btn-sm btn-b" title="\u0635\u0641\u062D\u0647 \u0633\u0627\u0628"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></a> <button class="btn btn-sm btn-g" onclick="copySubLink(\''+u.username+'\')" title="\u06A9\u067E\u06CC \u0644\u06CC\u0646\u06A9 \u0633\u0627\u0628"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button></td>'+
       '<td><div class="act-row">'+
         '<button class="btn btn-sm btn-g" onclick="editUser(\''+u.user_id+'\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'+
         '<button class="btn btn-sm btn-b" onclick="viewCfg(\''+u.user_id+'\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>'+
@@ -413,6 +401,7 @@ function openCreateSub(){$id('mod-sub').classList.add('show')}
 async function submitCreateSub(e){e.preventDefault();var btn=$id('cs-submit');btn.disabled=true;btn.textContent='⏳';
   try{await api('/api/subs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$id('cs-name').value,description:$id('cs-desc').value})});toast('اشتراک ایجاد شد','ok');closeModal('mod-sub');loadSubs()}catch(e){}btn.disabled=false;btn.textContent='ایجاد'}
 async function delSub(id){if(!confirm('حذف؟'))return;try{await api('/api/subs/'+id,{method:'DELETE'});toast('حذف شد','ok');loadSubs()}catch(e){}}
+function copySubLink(uname){var url=window.location.origin+'/sub/'+uname;navigator.clipboard.writeText(url).then(function(){toast('\u0644\u06CC\u0646\u06A9 \u0633\u0627\u0628 \u06A9\u067E\u06CC \u0634\u062F','ok')}).catch(function(){})}
 function copyText(t){navigator.clipboard.writeText(t).then(function(){toast('کپی شد','ok')})}
 
 // ═══════ SPIDER IP ═══════
@@ -442,6 +431,9 @@ async function changePassword(){var o=$id('set-old').value,n=$id('set-new').valu
   try{await api('/api/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:o,new_password:n})});toast('رمز تغییر کرد','ok');$id('set-old').value='';$id('set-new').value=''}catch(e){}}
 
 // ═══════ INIT ═══════
+function openSidebar(){$id("sidebar").classList.add("open");$id("sidebar-backdrop").classList.add("show")}
+function closeSidebar(){$id("sidebar").classList.remove("open");$id("sidebar-backdrop").classList.remove("show")}
+function toggleSidebar(){$id("sidebar").classList.contains("open")?closeSidebar():openSidebar()}
 (async function init(){var authed=await checkAuth();if(authed){showApp();return}$id('login-wrap').style.display='flex';$id('login-pw').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin()});loadRealitySettings()})();
 </script>
 </body>
