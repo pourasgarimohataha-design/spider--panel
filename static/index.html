@@ -117,7 +117,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .badge-p{background:rgba(124,77,255,.1);color:var(--purple)}
 .empty{text-align:center;padding:30px;color:var(--txt2);font-size:13px}
 
-/* Progress bar */
+/* Progress bar *//* Server stats bars */.srv-bar{margin-bottom:4px}.srv-bar-h{display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px}.srv-bar-h strong{font-size:11px}.srv-bar-bg{height:6px;background:var(--bg);border-radius:3px;overflow:hidden}.srv-bar-f{height:100%;border-radius:3px;transition:width .4s}
 .pbar{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:4px}
 .pbar-f{height:100%;background:var(--pbar-grad);border-radius:3px;transition:width .4s}
 
@@ -213,7 +213,25 @@ tr:hover td{background:rgba(255,255,255,.02)}
 
       <!-- ═══ DASHBOARD ═══ -->
       <div id="tab-dashboard" class="tab-content">
-        <div class="stats"><div class="stat"><div class="stat-v" id="s1">0</div><div class="stat-l">کاربران فعال</div><small id="s1b">۰</small></div><div class="stat"><div class="stat-v" id="s2">0</div><div class="stat-l">کل کاربران</div><small id="s2b">۰</small></div><div class="stat"><div class="stat-v" id="s3">0 GB</div><div class="stat-l">ترافیک کل</div><small id="s3b">۰</small></div><div class="stat"><div class="stat-v" id="s4">--</div><div class="stat-l">Uptime</div><small id="s4b">--</small></div></div>
+        <div class="stats"><div class="stat"><div class="stat-v" id="s1">0</div><div class="stat-l">کاربران فعال</div><small id="s1b">۰</small></div><div class="stat"><div class="stat-v" id="s2">0
+        <!-- Server Stats -->
+        <div class="panel"><div class="panel-h"><span class="glow">Server Resources</span></div>
+          <div id="srv-stats" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div class="srv-bar"><div class="srv-bar-h"><span>CPU</span><strong id="srv-cpu">--</strong></div><div class="srv-bar-bg"><div class="srv-bar-f" id="srv-cpu-bar" style="width:0%;background:linear-gradient(90deg,var(--blue),var(--purple))"></div></div></div>
+            <div class="srv-bar"><div class="srv-bar-h"><span>RAM</span><strong id="srv-ram">--</strong></div><div class="srv-bar-bg"><div class="srv-bar-f" id="srv-ram-bar" style="width:0%;background:linear-gradient(90deg,var(--green),var(--blue))"></div></div></div>
+            <div class="srv-bar"><div class="srv-bar-h"><span>Disk</span><strong id="srv-disk">--</strong></div><div class="srv-bar-bg"><div class="srv-bar-f" id="srv-disk-bar" style="width:0%;background:linear-gradient(90deg,var(--gold),var(--neon))"></div></div></div>
+            <div class="srv-bar"><div class="srv-bar-h"><span>Network</span><strong id="srv-net">--</strong></div><div class="srv-bar-bg"><div class="srv-bar-f" id="srv-net-bar" style="width:0%;background:linear-gradient(90deg,var(--purple),var(--blue))"></div></div></div>
+          </div>
+          <div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:10px;color:var(--txt2)">
+            <div>Sent: <strong id="srv-sent" style="color:var(--txt)">--</strong></div>
+            <div>Recv: <strong id="srv-recv" style="color:var(--txt)">--</strong></div>
+            <div>Uptime: <strong id="srv-up" style="color:var(--txt)">--</strong></div>
+          </div>
+          <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:10px;color:var(--txt2)">
+            <div>Traffic Used: <strong id="srv-tu" style="color:var(--neon)">--</strong></div>
+            <div>Connections: <strong id="srv-conn" style="color:var(--txt)">--</strong></div>
+          </div>
+        </div></div><div class="stat-l">کل کاربران</div><small id="s2b">۰</small></div><div class="stat"><div class="stat-v" id="s3">0 GB</div><div class="stat-l">ترافیک کل</div><small id="s3b">۰</small></div><div class="stat"><div class="stat-v" id="s4">--</div><div class="stat-l">Uptime</div><small id="s4b">--</small></div></div>
         <div class="panel"><div class="panel-h"><span class="glow">کاربران اخیر</span></div><div class="tbl"><table><thead><tr><th>نام</th><th>پروتکل</th><th>مصرف</th><th>اعتبار</th><th>وضعیت</th><th>ساب</th><th>عملیات</th></tr></thead><tbody id="tbl-users"><tr><td colspan="7"><div class="empty">در حال بارگذاری...</div></td></tr></tbody></table></div></div>
       </div>
 
@@ -296,7 +314,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <div class="f-g"><label>اتصال همزمان</label><input type="number" id="cu-conn" value="2"></div>
     <div class="f-g"><label>پروتکل</label><select id="cu-proto"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="reality">Reality</option></select></div>
     <div class="f-g"><label>SNI</label><input type="text" id="cu-sni" value=""></div>
-    <div class="f-g"><label>Path</label><input type="text" id="cu-path" value="/"></div>
     <div class="f-g"><label>نوع انتقال</label><select id="cu-type"><option value="ws">WebSocket</option><option value="grpc">gRPC</option><option value="tcp">TCP</option><option value="xhttp">XHTTP</option></select></div>
     <div class="modal-btns"><button type="button" class="btn btn-g" onclick="closeModal('mod-user')">انصراف</button><button type="submit" class="btn btn-p" id="cu-submit">ایجاد کاربر</button></div>
   </form>
@@ -311,7 +328,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <div class="f-g"><label>اتصال همزمان</label><input type="number" id="eu-conn" value="2"></div>
     <div class="f-g"><label>پروتکل</label><select id="eu-proto"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="reality">Reality</option></select></div>
     <div class="f-g"><label>SNI</label><input type="text" id="eu-sni"></div>
-    <div class="f-g"><label>Path</label><input type="text" id="eu-path"></div>
     <div class="f-g"><label>نوع انتقال</label><select id="eu-type"><option value="ws">WS</option><option value="grpc">gRPC</option><option value="tcp">TCP</option><option value="xhttp">XHTTP</option></select></div>
     <div class="f-g"><label>وضعیت</label><select id="eu-status"><option value="active">فعال</option><option value="inactive">غیرفعال</option></select></div>
     <div class="f-g"><label><input type="checkbox" id="eu-reset"> ریست مصرف</label></div>
@@ -368,7 +384,7 @@ async function doLogout(){await fetch('/api/logout',{method:'POST'});$id('app-wr
 async function showApp(){$id('login-wrap').style.display='none';$id('app-wrap').classList.add('active');
   var h=new Date().getHours(),g='';if(h<6)g='شب بخیر';else if(h<12)g='صبح بخیر';else if(h<18)g='ظهر بخیر';else g='عصر بخیر';
   $id('grt').innerHTML='<strong>'+g+'</strong> 👋 به Spider Panel خوش آمدید';loadAll();setInterval(loadStats,30000)}
-async function loadAll(){loadStats();loadUsers()}
+async function loadAll(){loadStats();loadUsers();loadServerStats()}
 // ═══════ NAV ═══════
 function switchTab(tab,el){document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active')});if(el)el.classList.add('active');document.querySelectorAll('.tab-content').forEach(function(t){t.classList.add('hidden')});var t=$id('tab-'+tab);if(t){t.classList.remove('hidden');if(tab==='tools'){loadConnectionModes();loadRealitySettings()}}}
 
@@ -398,13 +414,13 @@ function renderUsers(){var start=(pgU-1)*PS,page=ALL_U.slice(start,start+PS);
 function openCreateUser(){$id('mod-user').classList.add('show');$id('cu-name').focus()}
 async function submitCreateUser(e){e.preventDefault();var btn=$id('cu-submit');btn.disabled=true;btn.textContent='⏳';
   var v=parseFloat($id('cu-vol').value)||0,vu=$id('cu-vol-u').value,ex=parseInt($id('cu-exp').value)||0,eu=$id('cu-exp-u').value;
-  try{var r=await api('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$id('cu-name').value,traffic_limit_gb:vu==='GB'?v:v/1024,expire_days:eu==='months'?ex*30:ex,concurrent_connections:parseInt($id('cu-conn').value)||2,protocol:$id('cu-proto').value,sni:$id('cu-sni').value,path:$id('cu-path').value,transport_type:$id('cu-type').value})});
+  try{var r=await api('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$id('cu-name').value,traffic_limit_gb:vu==='GB'?v:v/1024,expire_days:eu==='months'?ex*30:ex,concurrent_connections:parseInt($id('cu-conn').value)||2,protocol:$id('cu-proto').value,sni:$id('cu-sni').value,transport_type:$id('cu-type').value})});
     toast('کاربر '+r.username+' ایجاد شد','ok');closeModal('mod-user');loadAll()}catch(e){}btn.disabled=false;btn.textContent='ایجاد کاربر'}
 function editUser(uid){var u=ALL_U.find(function(x){return x.user_id===uid});if(!u)return;
-  $id('eu-id').value=uid;$id('eu-name').value=u.username||'';$id('eu-vol').value=(u.traffic_limit_bytes?u.traffic_limit_bytes/1073741824:0).toFixed(0);$id('eu-exp').value=u.expire_at?Math.ceil((new Date(u.expire_at)-new Date())/86400000):0;$id('eu-proto').value=u.protocol||'vless';$id('eu-sni').value=u.sni||'';$id('eu-path').value=u.path||'';$id('eu-type').value=u.transport_type||'ws';$id('eu-status').value=u.status||'active';$id('eu-conn').value=u.concurrent_connections||2;
+  $id('eu-id').value=uid;$id('eu-name').value=u.username||'';$id('eu-vol').value=(u.traffic_limit_bytes?u.traffic_limit_bytes/1073741824:0).toFixed(0);$id('eu-exp').value=u.expire_at?Math.ceil((new Date(u.expire_at)-new Date())/86400000):0;$id('eu-proto').value=u.protocol||'vless';$id('eu-sni').value=u.sni||'';$id('eu-type').value=u.transport_type||'ws';$id('eu-status').value=u.status||'active';$id('eu-conn').value=u.concurrent_connections||2;
   openModal('mod-edit-user')}
 async function submitEditUser(e){e.preventDefault();var uid=$id('eu-id').value,v=parseFloat($id('eu-vol').value)||0,ex=parseInt($id('eu-exp').value)||0;
-  try{await api('/api/users/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$id('eu-name').value,traffic_limit_gb:v,expire_days:ex,protocol:$id('eu-proto').value,sni:$id('eu-sni').value,path:$id('eu-path').value,transport_type:$id('eu-type').value,status:$id('eu-status').value,concurrent_connections:parseInt($id('eu-conn').value)||2,reset_traffic:$id('eu-reset').checked})});
+  try{await api('/api/users/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$id('eu-name').value,traffic_limit_gb:v,expire_days:ex,protocol:$id('eu-proto').value,sni:$id('eu-sni').value,transport_type:$id('eu-type').value,status:$id('eu-status').value,concurrent_connections:parseInt($id('eu-conn').value)||2,reset_traffic:$id('eu-reset').checked})});
     toast('کاربر بروزرسانی شد','ok');closeModal('mod-edit-user');loadAll()}catch(e){}}
 async function toggleU(uid){try{await api('/api/users/'+uid+'/toggle',{method:'PATCH'});toast('تغییر وضعیت','ok');loadAll()}catch(e){}}
 async function deleteU(uid){if(!confirm('حذف کاربر؟'))return;try{await api('/api/users/'+uid,{method:'DELETE'});toast('حذف شد','ok');loadAll()}catch(e){}}

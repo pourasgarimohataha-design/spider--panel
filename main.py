@@ -273,6 +273,9 @@ def uptime() -> str:
     h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+def uptime_secs():
+    return max(time.time() - stats["start_time"], 1)
+
 def parse_size_to_bytes(value: float, unit: str) -> int:
     unit = unit.upper()
     if unit == "GB": return int(value * 1024 ** 3)
@@ -365,43 +368,78 @@ def generate_user_config(user_id: str, user: dict) -> str:
     config_uuid = user.get("config_uuid", "")
     username = user.get("username", user_id)
     remark = quote(f"Spider-{username}")
-    sni = user.get("sni") or host  # Auto SNI = host, unless user has custom
+    sni = user.get("sni") or host
     transport_type = user.get("transport_type") or "ws"
 
-    # Path: uriencode, default to /{config_uuid} if user path is empty
-    raw_path = (user.get("path") or "").strip()
-    if raw_path:
+    # ── Path: ALWAYS random, unique per user ──
+    # User path field is ignored — system generates random paths
+    raw_path = (user.get("path") or "").strip() if user.get("path") else ""
+    if protocol == "reality":
+        # Reality: always generate fresh random path
+        path_enc = quote(f"/{secrets.token_hex(5)}", safe='')
+    elif raw_path:
         path_enc = quote(raw_path, safe='')
     else:
-        # Default path must match WebSocket route: /ws/{uuid}
         path_enc = quote(f"/ws/{config_uuid}", safe='')
 
     # ── Reality Protocol ──
     if protocol == "reality":
         rs = SETTINGS.get("reality", {})
-        reality_port = rs.get("port", 1234)
         reality_pbk = rs.get("public_key", "")
         reality_sid = rs.get("short_id", "6ba85179e30d4fc2")
         reality_spx = rs.get("spiderx", "/")
-        sni_reality = sni or rs.get("sni", "www.google.com")
+        # SNI: user SNI > settings SNI > default
+        sni_reality = sni if sni and sni != host else rs.get("sni", "www.google.com")
         ext_domain = rs.get("external_domain", host)
         ext_port = rs.get("external_port", 443)
-        params = (f"encryption=none&security=reality&type=tcp"
-                  f"&sni={quote(sni_reality)}&fp=chrome&alpn=h2,http/1.1"
-                  f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}")
+        # Transport: default to xhttp for Reality (user preference honored)
+        rt = user.get("transport_type") or "xhttp"
+        # Validate pbk — warn if empty
+        if not reality_pbk:
+            remark = quote(f"Spider-{username}-NO_PBK")
+
+        if rt == "xhttp":
+            extra = quote('{"xPaddingBytes":"100-1000","mode":"auto","scMaxEachPostBytes":"1000000"}', safe='')
+            params = (f"encryption=none&security=reality&sni={quote(sni_reality)}&fp=chrome"
+                      f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}"
+                      f"&type=xhttp&path={path_enc}&mode=auto&extra={extra}")
+        elif rt == "grpc":
+            params = (f"encryption=none&security=reality&sni={quote(sni_reality)}&fp=chrome"
+                      f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}"
+                      f"&type=grpc&serviceName={path_enc}&mode=gun")
+        elif rt == "ws":
+            params = (f"encryption=none&security=reality&sni={quote(sni_reality)}&fp=chrome"
+                      f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}"
+                      f"&type=ws&path={path_enc}")
+        else:  # tcp
+            params = (f"encryption=none&security=reality&type=tcp"
+                      f"&sni={quote(sni_reality)}&fp=chrome&alpn=h2,http/1.1"
+                      f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}")
         return f"vless://{config_uuid}@{ext_domain}:{ext_port}?{params}#{remark}"
 
     # ── VLESS ──
     if protocol == "vless":
         if transport_type == "grpc":
             params = f"encryption=none&security=tls&type=grpc&serviceName={path_enc}&host={host}&sni={sni}&fp=chrome&alpn=h2"
+            return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
         elif transport_type == "tcp":
             params = f"encryption=none&security=tls&type=tcp&host={host}&sni={sni}&fp=chrome&alpn=h2,http/1.1"
+            return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
         elif transport_type == "xhttp":
-            params = f"encryption=none&security=tls&type=xhttp&host={host}&path={path_enc}&sni={sni}&fp=chrome&alpn=h2,http/1.1"
+            extra = quote('{"xPaddingBytes":"100-1000","mode":"auto","scMaxEachPostBytes":"1000000"}', safe='')
+            params = f"encryption=none&security=tls&type=xhttp&host={host}&path={path_enc}&sni={sni}&fp=chrome&alpn=h2,http/1.1&mode=auto&extra={extra}"
+            return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
         else:  # ws default
-            params = f"encryption=none&security=tls&type=ws&host={host}&path={path_enc}&sni={sni}&fp=chrome"
-        return f"vless://{config_uuid}@{host}:443?{params}#{remark}"
+            # VLESS + WS + TLS: Domain from Domain Management ONLY, port 443, no Reality
+            ws_host = SETTINGS.get("domain") or host
+            ws_sni = sni if sni and sni != host else ws_host
+            # Path: /ws/{config_uuid[:8]}
+            ws_path = quote(f"/ws/{config_uuid[:8]}", safe='')
+            params = (f"path={ws_path}&security=tls&alpn=http%2F1.1"
+                      f"&encryption=none&insecure=0&host={ws_host}"
+                      f"&fp=chrome&type=ws&allowInsecure=0&sni={ws_sni}")
+            # Address: use domain from settings, always port 443
+            return f"vless://{config_uuid}@{ws_host}:443?{params}#{remark}"
 
     # ── VMess ──
     elif protocol == "vmess":
@@ -2138,32 +2176,55 @@ ws_client_count = 0
 WS_LIVE_CLIENTS: set = set()
 
 def get_live_stats() -> dict:
-    """Build simulated live stats for the server."""
+    """Get real server stats using psutil with fallback."""
     conn_count = len(connections)
-    async def _cpu():
-        return round(min(conn_count * 0.3 + 5, 95), 1)
-    async def _ram():
-        total_users = len(USERS)
-        return round(min(45 + (total_users * 0.5) + (conn_count * 0.1), 95), 1)
-    async def _disk():
-        total_configs = len(LINKS)
-        total_users = len(USERS)
-        return round(min(25 + (total_configs * 0.02) + (total_users * 0.1), 90), 1)
-    import random
-    network_mbps = round(random.uniform(1.5, max(float(SETTINGS.get("bandwidth_limit_mbps", 100)) * 0.4, 5)), 2)
-    uptime_secs = max(time.time() - stats["start_time"], 1)
-    cpu_percent = round(min(conn_count * 0.3 + 5 + random.uniform(-3, 3), 95), 1)
-    ram_percent = round(min(45 + (len(USERS) * 0.5) + (conn_count * 0.1) + random.uniform(-2, 2), 95), 1)
-    disk_percent = round(min(25 + (len(LINKS) * 0.02) + (len(USERS) * 0.1), 90), 1)
-    
+    try:
+        import psutil as _ps
+        cpu_pct = round(_ps.cpu_percent(interval=0.3), 1)
+        mem = _ps.virtual_memory()
+        ram_pct = round(mem.percent, 1)
+        ram_used_gb = round(mem.used / (1024**3), 2)
+        ram_total_gb = round(mem.total / (1024**3), 2)
+        disk = _ps.disk_usage('/')
+        disk_pct = round(disk.percent, 1)
+        disk_used_gb = round(disk.used / (1024**3), 2)
+        disk_total_gb = round(disk.total / (1024**3), 2)
+        net = _ps.net_io_counters()
+        net_sent_mb = round(net.bytes_sent / (1024**2), 2)
+        net_recv_mb = round(net.bytes_recv / (1024**2), 2)
+        network_mbps = round(max((net.bytes_sent + net.bytes_recv) / (1024**2) / max(uptime_secs(), 1) * 8, 0.5), 2)
+    except Exception:
+        cpu_pct = round(min(conn_count * 0.3 + 5, 95), 1)
+        ram_pct = round(min(45 + len(USERS) * 0.5 + conn_count * 0.1, 95), 1)
+        ram_used_gb = round(ram_pct / 100 * 8, 2)
+        ram_total_gb = 8
+        disk_pct = round(min(25 + len(LINKS) * 0.02 + len(USERS) * 0.1, 90), 1)
+        disk_used_gb = round(disk_pct / 100 * 50, 2)
+        disk_total_gb = 50
+        net_sent_mb = 0
+        net_recv_mb = 0
+        network_mbps = 2.5
+    # Calculate total traffic from all users
+    total_used = sum(u.get("traffic_used_bytes", 0) for u in USERS.values())
+    total_limit = sum(u.get("traffic_limit_bytes", 0) for u in USERS.values())
     return {
-        "cpu_percent": max(0, cpu_percent),
-        "ram_percent": max(0, ram_percent),
-        "disk_percent": max(0, disk_percent),
+        "cpu_percent": max(0, cpu_pct),
+        "ram_percent": max(0, ram_pct),
+        "ram_used_gb": ram_used_gb,
+        "ram_total_gb": ram_total_gb,
+        "disk_percent": max(0, disk_pct),
+        "disk_used_gb": disk_used_gb,
+        "disk_total_gb": disk_total_gb,
         "network_mbps": network_mbps,
+        "net_sent_mb": net_sent_mb,
+        "net_recv_mb": net_recv_mb,
         "active_connections": conn_count,
         "ws_connections": ws_client_count,
+        "total_users": len(USERS),
+        "total_traffic_used_tb": round(total_used / (1024**4), 3),
+        "total_traffic_limit_tb": round(total_limit / (1024**4), 3) if total_limit > 0 else 0,
         "uptime": uptime(),
+        "uptime_seconds": uptime_secs(),
         "timestamp": datetime.now().isoformat(),
     }
 
