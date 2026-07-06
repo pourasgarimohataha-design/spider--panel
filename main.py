@@ -1368,6 +1368,17 @@ async def update_inbound(inbound_id: str, request: Request, _=Depends(require_au
             ib["network"] = str(body["network"]).lower()
         if "security" in body:
             ib["security"] = str(body["security"]).lower()
+        # Reality protocol must always use security="reality"
+        if ib.get("protocol") == "reality":
+            ib["security"] = "reality"
+            # Auto-update reality_settings with short_id/spiderx if not present
+            rs = ib.setdefault("reality_settings", {})
+            if not rs.get("short_id"):
+                rs["short_id"] = secrets.token_hex(5)[:10]
+            rs.setdefault("spiderx", "/")
+            rs.setdefault("dest", "is1-ssl.mzstatic.com:443")
+            if ib.get("network") not in ("tcp", "xhttp", "grpc"):
+                ib["network"] = "tcp"
         if "domain" in body:
             ib["domain"] = str(body["domain"]).strip()
         if "external_domain" in body:
@@ -1386,9 +1397,52 @@ async def update_inbound(inbound_id: str, request: Request, _=Depends(require_au
             ib["ws_settings"] = body["ws_settings"]
         if "grpc_settings" in body and isinstance(body["grpc_settings"], dict):
             ib["grpc_settings"] = body["grpc_settings"]
-    asyncio.create_task(save_state())
+    await save_state()
     log_activity("inbound", f"اینباند «{ib.get('name', inbound_id)}» ویرایش شد", "info")
     return {"ok": True}
+
+
+@app.post("/api/inbounds/{inbound_id}/generate-reality-keys")
+async def generate_inbound_reality_keys(inbound_id: str, _=Depends(require_auth)):
+    """Generate Reality x25519 key pair + short_id + spiderx for an inbound."""
+    async with INBOUNDS_LOCK:
+        ib = INBOUNDS.get(inbound_id)
+        if not ib:
+            raise HTTPException(status_code=404, detail="inbound not found")
+        try:
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+            from cryptography.hazmat.primitives import serialization
+            priv = X25519PrivateKey.generate()
+            priv_bytes = priv.private_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PrivateFormat.Raw,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            pub_bytes = priv.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            import base64 as b64
+            rs = ib.setdefault("reality_settings", {})
+            rs["private_key"] = b64.b64encode(priv_bytes).decode()
+            rs["public_key"] = b64.b64encode(pub_bytes).decode()
+            rs["short_id"] = secrets.token_hex(5)[:10]
+            rs.setdefault("spiderx", "/")
+            rs.setdefault("dest", "is1-ssl.mzstatic.com:443")
+            ib["security"] = "reality"
+            ib["protocol"] = "reality"
+            if ib.get("network") not in ("tcp", "xhttp", "grpc"):
+                ib["network"] = "tcp"
+        except ImportError:
+            return {"error": True, "note": "cryptography not installed: pip install cryptography"}
+    await save_state()
+    return {
+        "ok": True,
+        "public_key": rs["public_key"],
+        "private_key": rs["private_key"],
+        "short_id": rs["short_id"],
+        "spiderx": rs.get("spiderx", "/"),
+    }
 
 
 @app.delete("/api/inbounds/{inbound_id}")

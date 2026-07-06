@@ -77,6 +77,15 @@ async def check_and_use(uid: str, n: int) -> bool:
         link["used_bytes"] += n
         stats["total_bytes"] += n
         hourly_traffic[m.now_ir().strftime("%H:00")] += n
+
+    # Sync traffic back to user (so subscription page shows real usage)
+    user_id = link.get("user_id")
+    if user_id:
+        async with m.USERS_LOCK:
+            u = m.USERS.get(user_id)
+            if u:
+                u["traffic_used_bytes"] = u.get("traffic_used_bytes", 0) + n
+
     return True
 
 async def relay_ws_to_tcp(ws: WebSocket, writer: asyncio.StreamWriter, conn_id: str, uid: str):
