@@ -585,8 +585,17 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
             params = f"encryption=none&security=tls&type=tcp&host={quote(vless_host)}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1"
             return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         elif transport_type == "xhttp":
-            extra = quote('{"xPaddingBytes":"100-1000","mode":"auto","scMaxEachPostBytes":"1000000"}', safe='')
-            params = f"encryption=none&security=tls&type=xhttp&host={quote(vless_host)}&path={quote(stored_path, safe='')}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1&mode=auto&extra={extra}"
+            # Read xhttp settings from user's link in LINKS (sync access ok — single-thread)
+            xh = {}
+            lk = LINKS.get(config_uuid)
+            if lk:
+                xh = lk.get("xhttp_settings", {})
+            xpad = xh.get("xPaddingBytes", "100-1000")
+            xmode = xh.get("mode", "auto")
+            xsc = xh.get("scMaxEachPostBytes", "1000000")
+            extra_raw = '{{"xPaddingBytes":"{}","mode":"{}","scMaxEachPostBytes":"{}"}}'.format(xpad, xmode, xsc)
+            extra = quote(extra_raw, safe='')
+            params = f"encryption=none&security=tls&type=xhttp&host={quote(vless_host)}&path={quote(stored_path, safe='')}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1&mode={xmode}&extra={extra}"
             return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         else:  # ws — config_uuid IS the path (same as reference RVG-main)
             ws_host = (inbound.get("domain") if inbound else None) or SETTINGS.get("domain") or host
@@ -1495,6 +1504,8 @@ async def list_users(_=Depends(require_auth)):
             "user_id": uid,
             "username": u.get("username"),
             "protocol": protocol,
+            "transport_type": u.get("transport_type", "ws"),
+            "path": u.get("path", ""),
             "traffic_limit_bytes": u.get("traffic_limit_bytes", 0),
             "traffic_limit_fmt": "∞" if u.get("traffic_limit_bytes", 0) == 0 else fmt_bytes(u["traffic_limit_bytes"]),
             "traffic_used_bytes": u.get("traffic_used_bytes", 0),
@@ -1596,7 +1607,10 @@ async def create_user(request: Request, _=Depends(require_auth)):
             "config_uuid": config_uuid,
             "subscription_uuid": subscription_uuid,
             "sni": sni,
-            "path": path_custom if path_custom else f"/ws/{config_uuid}",
+            "path": path_custom if path_custom else (
+                f"/xhttp-siz10/stream-up/{config_uuid}" if transport_type == "xhttp" else
+                f"/ws/{config_uuid}"
+            ),
             "transport_type": transport_type,
             "inbound_id": inbound_id,
         }
@@ -1604,6 +1618,13 @@ async def create_user(request: Request, _=Depends(require_auth)):
 
     # Auto-create matching link so relay can find it
     async with LINKS_LOCK:
+        link_xhttp = {}
+        if transport_type == "xhttp":
+            link_xhttp = {
+                "xPaddingBytes": "100-1000",
+                "mode": "auto",
+                "scMaxEachPostBytes": "1000000",
+            }
         LINKS[config_uuid] = {
             "label": username,
             "limit_bytes": traffic_limit_bytes,
@@ -1615,6 +1636,8 @@ async def create_user(request: Request, _=Depends(require_auth)):
             "is_default": False,
             "sub_id": None,
             "protocol": protocol,
+            "transport_type": transport_type,
+            "xhttp_settings": link_xhttp,
             "path": _path,
             "user_id": user_id,
         }
