@@ -1139,6 +1139,26 @@ async def create_user(request: Request, _=Depends(require_auth)):
     traffic_limit_bytes = int(traffic_limit_gb * 1024 ** 3) if traffic_limit_gb > 0 else 0
     expire_at = (datetime.now() + timedelta(days=expire_days)).isoformat() if expire_days > 0 else None
 
+    # Auto-generate Reality key pair if protocol is reality and no key exists
+    if protocol == "reality":
+        async with SETTINGS_LOCK:
+            reality = SETTINGS.get("reality", {})
+            if not reality.get("public_key"):
+                try:
+                    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+                    priv = X25519PrivateKey.generate()
+                    priv_bytes = priv.private_bytes_raw()
+                    pub_bytes = priv.public_key().public_bytes_raw()
+                    import base64 as b64
+                    reality["private_key"] = b64.b64encode(priv_bytes).decode()
+                    reality["public_key"] = b64.b64encode(pub_bytes).decode()
+                    reality["short_id"] = reality.get("short_id") or secrets.token_hex(8)[:16]
+                    SETTINGS["reality"] = reality
+                    asyncio.create_task(save_state())
+                    log_activity("settings", "کلید Reality خودکار ساخته شد", "ok")
+                except ImportError:
+                    pass  # cryptography not installed, use existing or empty key
+
     async with USERS_LOCK:
         # Check for duplicate username
         for existing in USERS.values():
