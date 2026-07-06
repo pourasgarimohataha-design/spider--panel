@@ -763,8 +763,119 @@ a{color:inherit;text-decoration:none}
 
   <!-- SETTINGS PAGE -->
   <section class="page" id="page-settings">
-    <div class="topbar"><div><div class="topbar-title"><i class="ti ti-settings"></i> تنظیمات</div></div></div>
-    <div class="empty-state"><i class="ti ti-settings"></i><p>بخش تنظیمات سیستم</p></div>
+    <div class="topbar">
+      <div><div class="topbar-title"><i class="ti ti-settings"></i> تنظیمات</div><div class="topbar-sub">تنظیمات عمومی پنل</div></div>
+      <div class="topbar-right"><button class="btn btn-primary" onclick="saveSettings()"><i class="ti ti-device-floppy"></i> ذخیره تغییرات</button></div>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:18px">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--border)">
+        <div class="server-title" style="margin-bottom:0"><i class="ti ti-world"></i> دامنه و شبکه</div>
+      </div>
+      <div style="padding:18px 22px">
+        <div class="form-field">
+          <label><i class="ti ti-world-www"></i> دامنه اصلی</label>
+          <input class="form-input" id="set-domain" placeholder="example.com" dir="ltr">
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label><i class="ti ti-route"></i> نوع انتقال پیش‌فرض</label>
+            <select class="form-select" id="set-transport">
+              <option value="ws">WebSocket (WS)</option>
+              <option value="xhttp">XHTTP</option>
+              <option value="tcp">TCP</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label><i class="ti ti-plug-connected"></i> مد اتصال پیش‌فرض</label>
+            <select class="form-select" id="set-conn-mode">
+              <option value="ws">WebSocket</option>
+              <option value="xhttp">XHTTP</option>
+              <option value="tcp">TCP</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:18px">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--border)">
+        <div class="server-title" style="margin-bottom:0"><i class="ti ti-toggle-right"></i> پروتکل‌ها و مدها</div>
+      </div>
+      <div style="padding:18px 22px">
+        <div class="form-row" style="margin-bottom:12px">
+          <div class="form-field">
+            <label><i class="ti ti-protocol"></i> پروتکل‌های فعال</label>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:6px 12px;background:rgba(43,127,255,.06);border-radius:8px;border:1px solid var(--border)"><input type="checkbox" id="set-proto-vless" checked onchange="updateProtoCheckboxes()"> VLESS</label>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:6px 12px;background:rgba(123,97,255,.06);border-radius:8px;border:1px solid var(--border)"><input type="checkbox" id="set-proto-vmess" onchange="updateProtoCheckboxes()"> VMess</label>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:6px 12px;background:rgba(255,35,82,.06);border-radius:8px;border:1px solid var(--border)"><input type="checkbox" id="set-proto-trojan" onchange="updateProtoCheckboxes()"> Trojan</label>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:6px 12px;background:rgba(245,158,11,.06);border-radius:8px;border:1px solid var(--border)"><input type="checkbox" id="set-proto-reality" onchange="updateProtoCheckboxes()"> Reality</label>
+            </div>
+          </div>
+        </div>
+        <div class="toggle-wrap" style="margin-bottom:10px">
+          <button type="button" class="toggle-switch on" id="set-ws-mode" onclick="this.classList.toggle('on')"></button>
+          <span class="toggle-label">WebSocket Mode</span>
+        </div>
+        <div class="toggle-wrap">
+          <button type="button" class="toggle-switch on" id="set-xhttp-mode" onclick="this.classList.toggle('on')"></button>
+          <span class="toggle-label">XHTTP Mode</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:18px">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--border)">
+        <div class="server-title" style="margin-bottom:0"><i class="ti ti-shield-lock"></i> تنظیمات Reality</div>
+      </div>
+      <div style="padding:18px 22px">
+        <div class="form-row">
+          <div class="form-field">
+            <label><i class="ti ti-plug"></i> پورت Reality</label>
+            <input class="form-input" id="set-real-port" type="number" placeholder="1234">
+          </div>
+          <div class="form-field">
+            <label><i class="ti ti-globe"></i> Destination (dest)</label>
+            <input class="form-input" id="set-real-dest" placeholder="google.com:443" dir="ltr">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label><i class="ti ti-key"></i> Public Key</label>
+            <input class="form-input" id="set-real-pbk" placeholder="x25519 public key" dir="ltr">
+          </div>
+          <div class="form-field">
+            <label><i class="ti ti-hash"></i> Short ID</label>
+            <input class="form-input" id="set-real-sid" placeholder="6ba85179e30d4fc2" dir="ltr">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label><i class="ti ti-link"></i> SpiderX Path</label>
+            <input class="form-input" id="set-real-spx" placeholder="/" dir="ltr">
+          </div>
+          <div class="form-field">
+            <label><i class="ti ti-globe"></i> SNI (Reality)</label>
+            <input class="form-input" id="set-real-sni" placeholder="www.google.com" dir="ltr">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label><i class="ti ti-world"></i> دامنه خارجی</label>
+            <input class="form-input" id="set-real-ext-domain" placeholder="ext.example.com" dir="ltr">
+          </div>
+          <div class="form-field">
+            <label><i class="ti ti-plug"></i> پورت خارجی</label>
+            <input class="form-input" id="set-real-ext-port" type="number" placeholder="443">
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="generateRealityKeys()"><i class="ti ti-key"></i> تولید کلید Reality</button>
+          <button class="btn btn-ghost" onclick="saveRealitySettings()"><i class="ti ti-device-floppy"></i> ذخیره Reality</button>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -823,7 +934,7 @@ function switchPage(name){
   document.querySelectorAll('.nav-item').forEach(function(el){el.classList.toggle('active',el.dataset.page===name)});
   document.querySelectorAll('.page').forEach(function(el){el.classList.toggle('active',el.id==='page-'+name)});
   toggleSidebar();window.scrollTo({top:0,behavior:'smooth'});
-  var loaders={users:loadUsers,configs:loadConfigs,traffic:loadTraffic,logs:loadLogs,dash:loadDashboard};
+  var loaders={users:loadUsers,configs:loadConfigs,traffic:loadTraffic,logs:loadLogs,dash:loadDashboard,settings:loadSettings};
   if(loaders[name])loaders[name]();
 }
 document.querySelectorAll('.nav-item').forEach(function(el){el.onclick=function(){switchPage(el.dataset.page)}});
@@ -1046,6 +1157,85 @@ async function loadDashboard(){
   }catch(e){console.error(e)}
 }
 
+/* ============ SETTINGS ============ */
+async function loadSettings(){
+  try{
+    var r=await authFetch('/api/tools/settings'),d=await r.json();
+    document.getElementById('set-domain').value=d.domain||'';
+    document.getElementById('set-transport').value=d.default_transport||'ws';
+    document.getElementById('set-conn-mode').value=d.default_connection_mode||'ws';
+    var protos=d.enabled_protocols||['vless'];
+    document.getElementById('set-proto-vless').checked=protos.includes('vless');
+    document.getElementById('set-proto-vmess').checked=protos.includes('vmess');
+    document.getElementById('set-proto-trojan').checked=protos.includes('trojan');
+    document.getElementById('set-proto-reality').checked=protos.includes('reality');
+    var wsEl=document.getElementById('set-ws-mode');
+    d.websocket_mode!==false?wsEl.classList.add('on'):wsEl.classList.remove('on');
+    var xhEl=document.getElementById('set-xhttp-mode');
+    d.xhttp_mode!==false?xhEl.classList.add('on'):xhEl.classList.remove('on');
+    // Reality
+    var real=d.reality||{};
+    document.getElementById('set-real-port').value=real.port||1234;
+    document.getElementById('set-real-dest').value=real.dest||'google.com:443';
+    document.getElementById('set-real-pbk').value=real.public_key||'';
+    document.getElementById('set-real-sid').value=real.short_id||'6ba85179e30d4fc2';
+    document.getElementById('set-real-spx').value=real.spiderx||'/';
+    document.getElementById('set-real-sni').value=real.sni||d.domain||'';
+    document.getElementById('set-real-ext-domain').value=real.external_domain||d.domain||'';
+    document.getElementById('set-real-ext-port').value=real.external_port||443;
+  }catch(e){console.error(e)}
+}
+
+async function saveSettings(){
+  try{
+    var protos=[];
+    if(document.getElementById('set-proto-vless').checked)protos.push('vless');
+    if(document.getElementById('set-proto-vmess').checked)protos.push('vmess');
+    if(document.getElementById('set-proto-trojan').checked)protos.push('trojan');
+    if(document.getElementById('set-proto-reality').checked)protos.push('reality');
+    var body={
+      domain:document.getElementById('set-domain').value.trim(),
+      default_transport:document.getElementById('set-transport').value,
+      default_connection_mode:document.getElementById('set-conn-mode').value,
+      enabled_protocols:protos,
+      websocket_mode:document.getElementById('set-ws-mode').classList.contains('on'),
+      xhttp_mode:document.getElementById('set-xhttp-mode').classList.contains('on')
+    };
+    var r=await authFetch('/api/tools/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error();
+    toast('تنظیمات ذخیره شد ✓','ok');
+  }catch(e){toast('خطا در ذخیره تنظیمات','err')}
+}
+
+async function saveRealitySettings(){
+  try{
+    var body={
+      port:parseInt(document.getElementById('set-real-port').value)||1234,
+      dest:document.getElementById('set-real-dest').value.trim(),
+      public_key:document.getElementById('set-real-pbk').value.trim(),
+      short_id:document.getElementById('set-real-sid').value.trim(),
+      spiderx:document.getElementById('set-real-spx').value.trim(),
+      sni:document.getElementById('set-real-sni').value.trim(),
+      external_domain:document.getElementById('set-real-ext-domain').value.trim(),
+      external_port:parseInt(document.getElementById('set-real-ext-port').value)||443
+    };
+    var r=await authFetch('/api/tools/reality-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error();
+    toast('تنظیمات Reality ذخیره شد ✓','ok');
+  }catch(e){toast('خطا در ذخیره Reality','err')}
+}
+
+async function generateRealityKeys(){
+  try{
+    var r=await authFetch('/api/tools/generate-reality-keys',{method:'POST'});
+    var d=await r.json();
+    document.getElementById('set-real-pbk').value=d.public_key||'';
+    toast('کلیدهای Reality تولید شد ✓','ok');
+  }catch(e){toast('خطا در تولید کلید','err')}
+}
+
+function updateProtoCheckboxes(){/* no-op hook for UI */}
+
 /* ============ REFRESH ============ */
 function refreshAll(){
   loadDashboard();loadUsers();loadConfigs();loadTraffic();loadLogs();
@@ -1062,6 +1252,7 @@ document.addEventListener('DOMContentLoaded',async function(){
     if(currentPage==='configs')loadConfigs();
     if(currentPage==='traffic')loadTraffic();
     if(currentPage==='logs')loadLogs();
+    if(currentPage==='settings')loadSettings();
   },5000);
 });
 </script>

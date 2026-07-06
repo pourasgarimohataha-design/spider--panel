@@ -484,20 +484,46 @@ async def root():
 async def health():
     return {"status": "ok", "connections": len(connections), "uptime": uptime()}
 
-# ── Subscription (single link) ────────────────────────────────────────────────
-@app.get("/sub/{uuid}")
-async def subscription_single(uuid: str):
+# ── Subscription ping (must be before /sub/{{identifier}}) ──────────────────
+@app.get("/sub/{identifier}/ping")
+async def sub_ping_handler(identifier: str):
+    """Ping endpoint for subscription page — returns a simple response."""
+    # Check user first
+    async with USERS_LOCK:
+        for u in USERS.values():
+            if u.get("username") == identifier and u.get("status") == "active":
+                return {"ok": True, "ping": "pong", "username": identifier}
+    # Fallback: check if it's a link
+    async with LINKS_LOCK:
+        link = LINKS.get(identifier)
+    if link and is_link_allowed(link):
+        return {"ok": True, "ping": "pong", "uuid": identifier}
+    raise HTTPException(status_code=404, detail="User not found")
+
+
+# ── Subscription (single link / user sub page) ──────────────────────────────
+@app.get("/sub/{identifier}")
+async def subscription_handler(identifier: str, request: Request):
+    """Smart handler: checks users first, then links by UUID."""
+    # 1) Check if it's a user (serve HTML sub page)
+    async with USERS_LOCK:
+        for uid, u in USERS.items():
+            if u.get("username") == identifier:
+                return FileResponse(_os.path.join(_STATIC_DIR, "sub.html"))
+
+    # 2) Check if it's a link UUID (return base64 config)
     import base64
     async with LINKS_LOCK:
-        link = LINKS.get(uuid)
-    if not link or not is_link_allowed(link):
-        raise HTTPException(status_code=404, detail="not found")
-    host = SETTINGS.get("domain") or get_host()
-    proto = link.get("protocol", DEFAULT_PROTOCOL)
-    vless = generate_vless_link(uuid, host, remark=f"Spider-{link['label']}", protocol=proto)
-    content = base64.b64encode(vless.encode()).decode()
-    return Response(content=content, media_type="text/plain",
-                    headers={"profile-title": quote(link["label"]), "support-url": "https://t.me/SpiderPanel"})
+        link = LINKS.get(identifier)
+    if link and is_link_allowed(link):
+        host = SETTINGS.get("domain") or get_host()
+        proto = link.get("protocol", DEFAULT_PROTOCOL)
+        vless = generate_vless_link(identifier, host, remark=f"Spider-{link['label']}", protocol=proto)
+        content = base64.b64encode(vless.encode()).decode()
+        return Response(content=content, media_type="text/plain",
+                        headers={"profile-title": quote(link["label"]), "support-url": "https://t.me/SpiderPanel"})
+
+    raise HTTPException(status_code=404, detail="not found")
 
 @app.get("/sub-all")
 async def subscription_all(_=Depends(require_auth)):
@@ -1448,13 +1474,9 @@ async def test_ws_redirect():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# USER SUBSCRIPTION PAGE (Public) — /sub/{username}
+# USER SUBSCRIPTION DATA API (Public)
+# Note: /sub/{identifier} above now handles both user HTML pages and link configs.
 # ══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/sub/{username}", response_class=HTMLResponse)
-async def user_sub_page(username: str):
-    """Serve the subscription page for a user."""
-    return FileResponse(_os.path.join(_STATIC_DIR, "sub.html"))
 
 @app.get("/api/sub/{username}")
 async def api_user_sub(username: str):
@@ -1528,15 +1550,6 @@ async def api_user_sub(username: str):
         "concurrent_connections": user.get("concurrent_connections", 3),
         "server": user.get("server", ""),
     }
-
-@app.get("/sub/{username}/ping")
-async def user_sub_ping(username: str):
-    """Ping endpoint for subscription page — returns a simple response."""
-    async with USERS_LOCK:
-        for u in USERS.values():
-            if u.get("username") == username and u.get("status") == "active":
-                return {"ok": True, "ping": "pong", "username": username}
-    raise HTTPException(status_code=404, detail="User not found")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
