@@ -395,8 +395,8 @@ def generate_user_config(user_id: str, user: dict) -> str:
         # Validate required Reality fields
         if not reality_pbk or not reality_sid:
             return f"vless://{config_uuid}@{ext_domain}:{ext_port}?encryption=none&security=reality&sni={quote(sni_reality)}&fp=chrome&pbk=MISSING_PBK&sid=MISSING_SID&type=tcp#{remark}"
-        # Always generate random path (user path field ignored)
-        rpath = f"/{secrets.token_hex(5)}"
+        # Path: always / for Reality
+        rpath = "/"
         # Transport: honor user selection, default xhttp
         rt = user.get("transport_type") or "xhttp"
         if rt == "xhttp":
