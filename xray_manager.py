@@ -26,15 +26,29 @@ from typing import Optional
 logger = logging.getLogger("Spider-Gateway.XrayMgr")
 
 # ── Constants ────────────────────────────────────────────────────────────────
+APP_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+BUNDLED_XRAY_DIR = APP_DIR / "xray-core"
 XRAY_DOWNLOAD_URL = os.environ.get(
     "XRAY_DOWNLOAD_URL",
     "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip",
 )
-XRAY_DIR = Path(os.environ.get("XRAY_DIR", "/data/xray-core"))
-XRAY_BIN = XRAY_DIR / "xray"
-XRAY_CONFIG_PATH = XRAY_DIR / "config.json"
-XRAY_LOG_PATH = XRAY_DIR / "xray.log"
-XRAY_PID_PATH = XRAY_DIR / "xray.pid"
+# Prefer bundled binary inside the project, fall back to env var /data path
+if BUNDLED_XRAY_DIR.exists() and (BUNDLED_XRAY_DIR / "xray").exists() and os.access(str(BUNDLED_XRAY_DIR / "xray"), os.X_OK):
+    XRAY_BIN = BUNDLED_XRAY_DIR / "xray"
+    XRAY_DIR = BUNDLED_XRAY_DIR  # where the binary lives (also has geoip/geosite)
+    _bundled = True
+    logger.info(f"Using bundled Xray-core from {BUNDLED_XRAY_DIR}")
+else:
+    XRAY_DIR = Path(os.environ.get("XRAY_DIR", "/data/xray-core"))
+    XRAY_BIN = XRAY_DIR / "xray"
+    _bundled = False
+
+# Runtime files go to a writable location (app dir may be read-only on Railway)
+XRAY_RUNTIME_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "xray-runtime"
+XRAY_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+XRAY_CONFIG_PATH = XRAY_RUNTIME_DIR / "config.json"
+XRAY_LOG_PATH = XRAY_RUNTIME_DIR / "xray.log"
+XRAY_PID_PATH = XRAY_RUNTIME_DIR / "xray.pid"
 
 # ── Global state ──────────────────────────────────────────────────────────────
 _xray_process: Optional[subprocess.Popen] = None
@@ -156,7 +170,7 @@ async def extract_xray() -> bool:
 
 
 async def install_xray(force: bool = False) -> bool:
-    """Install or reinstall Xray-core. Idempotent unless force=True."""
+    """Install or reinstall Xray-core. Uses bundled binary if present; downloads otherwise."""
     global _installed
 
     async with _install_lock:
@@ -168,8 +182,24 @@ async def install_xray(force: bool = False) -> bool:
             logger.info(f"Xray-core already installed: {ver}")
             return True
 
+        # If bundled binary exists, just validate it (no download needed)
+        if _bundled and XRAY_BIN.exists():
+            try:
+                XRAY_BIN.chmod(0o755)
+            except Exception:
+                pass
+            if await is_installed():
+                _installed = True
+                ver = await get_local_version()
+                logger.info(f"Xray-core (bundled) ready: {ver}")
+                return True
+
         if force and XRAY_BIN.exists():
             XRAY_BIN.unlink()
+
+        if _bundled:
+            logger.error("Bundled Xray binary not executable — cannot fall back to download. Check permissions.")
+            return False
 
         ok = await download_xray()
         if not ok:
