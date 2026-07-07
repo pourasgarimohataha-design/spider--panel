@@ -394,7 +394,7 @@ def now_ir() -> datetime:
     return datetime.now(IRAN_TZ)
 
 def generate_vless_link(uuid: str, host: str, remark: str = "Spider", protocol: str = DEFAULT_PROTOCOL) -> str:
-    """می‌سازد VLESS share-link متناسب با پروتکل انتخاب‌شده (WS کلاسیک یا یکی از مدهای XHTTP)."""
+    """می‌سازد VLESS share-link متناسب با پروتکل انتخاب‌شده (WS / XHTTP / Reality)."""
     if protocol == "vless-ws":
         path = f"/ws/{uuid}"
         params = {
@@ -406,6 +406,42 @@ def generate_vless_link(uuid: str, host: str, remark: str = "Spider", protocol: 
             "sni": host,
             "fp": "chrome",
             "alpn": "http/1.1",
+        }
+    elif protocol == "reality":
+        # Read Reality settings from the link itself (stored in LINKS)
+        link = LINKS.get(uuid, {})
+        rs = link.get("reality_settings", {}) or SETTINGS.get("reality", {})
+        xs = link.get("xhttp_settings", {}) or {}
+        pbk = rs.get("public_key", "")
+        sid = rs.get("short_id", "")
+        spx = rs.get("spiderx", "/")
+        fp = rs.get("fingerprint", "chrome")
+        xpath = xs.get("path") or "/"
+        xmode = xs.get("mode") or "auto"
+        # Auto-gen keys on the fly if missing
+        if not pbk:
+            priv, pub = generate_x25519_keys()
+            pbk = pub
+        if not sid:
+            sid = secrets.token_hex(5)[:10]
+        extra_obj = {
+            "xPaddingBytes": xs.get("xPaddingBytes", "100-1000"),
+            "mode": xmode,
+            "scMaxEachPostBytes": xs.get("scMaxEachPostBytes", "1000000"),
+        }
+        extra_raw = json.dumps(extra_obj, separators=(',', ':'))
+        params = {
+            "encryption": "none",
+            "security": "reality",
+            "sni": host,
+            "fp": fp,
+            "pbk": pbk,
+            "sid": sid,
+            "spx": spx,
+            "type": "xhttp",
+            "path": xpath,
+            "mode": xmode,
+            "extra": quote(extra_raw, safe=''),
         }
     else:
         # xhttp-packet-up / xhttp-stream-up / xhttp-stream-one
@@ -544,6 +580,16 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
     user_proto = user.get("protocol")
     # Use inbound protocol if assigned; fall back to user preference; then default
     protocol = inbound_proto or user_proto or "vless"
+
+    # Belt-and-suspenders: even if protocol != "reality" explicitly, check whether
+    # the assigned inbound has reality_settings — some inbounds were migrated or
+    # manually set via security="reality" without updating the stored protocol field.
+    if protocol != "reality" and inbound:
+        rs_check = inbound.get("reality_settings", {})
+        ib_sec = inbound.get("security", "")
+        if ib_sec == "reality" or (rs_check and rs_check.get("public_key")):
+            protocol = "reality"
+
     config_uuid = user.get("config_uuid", "")
     username = user.get("username", user_id)
     remark = quote(f"Spider-{username}")
@@ -1785,12 +1831,24 @@ async def create_user(request: Request, _=Depends(require_auth)):
     # Auto-create matching link so relay can find it
     async with LINKS_LOCK:
         link_xhttp = {}
-        if transport_type == "xhttp":
+        link_reality = {}
+        if transport_type == "xhttp" or protocol == "reality":
             link_xhttp = {
                 "xPaddingBytes": "100-1000",
                 "mode": "auto",
                 "scMaxEachPostBytes": "1000000",
             }
+        # If protocol is reality, also store reality_settings from the assigned inbound
+        if protocol == "reality" and inbound_id:
+            ib = INBOUNDS.get(inbound_id)
+            if ib:
+                ib_rs = ib.get("reality_settings", {})
+                link_reality = {
+                    "public_key": ib_rs.get("public_key", ""),
+                    "short_id": ib_rs.get("short_id", ""),
+                    "spiderx": ib_rs.get("spiderx", "/"),
+                    "fingerprint": ib.get("fingerprint", "chrome"),
+                }
         LINKS[config_uuid] = {
             "label": username,
             "limit_bytes": traffic_limit_bytes,
@@ -1804,6 +1862,7 @@ async def create_user(request: Request, _=Depends(require_auth)):
             "protocol": protocol,
             "transport_type": transport_type,
             "xhttp_settings": link_xhttp,
+            "reality_settings": link_reality,
             "path": _path,
             "user_id": user_id,
         }
@@ -2007,6 +2066,19 @@ async def edit_user(user_id: str, request: Request, _=Depends(require_auth)):
                             "mode": "auto",
                             "scMaxEachPostBytes": "1000000",
                         }
+                if "protocol" in body:
+                    link["protocol"] = u["protocol"]
+                    # Sync reality_settings from inbound when protocol is reality
+                    if u["protocol"] == "reality" and u.get("inbound_id"):
+                        ib = INBOUNDS.get(u["inbound_id"])
+                        if ib:
+                            ib_rs = ib.get("reality_settings", {})
+                            link["reality_settings"] = {
+                                "public_key": ib_rs.get("public_key", ""),
+                                "short_id": ib_rs.get("short_id", ""),
+                                "spiderx": ib_rs.get("spiderx", "/"),
+                                "fingerprint": ib.get("fingerprint", "chrome"),
+                            }
 
     asyncio.create_task(save_state())
     log_activity("user", f"کاربر «{old_username}» ویرایش شد", "info")
