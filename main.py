@@ -11,7 +11,12 @@ import secrets
 import time
 import aiofiles
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+    _irantz = ZoneInfo("Asia/Tehran")
+except Exception:
+    from datetime import timezone, timedelta as _td
+    _irantz = timezone(_td(hours=3, minutes=30))
 from urllib.parse import quote
 from collections import deque, defaultdict
 import base64
@@ -38,7 +43,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
 
-IRAN_TZ = ZoneInfo("Asia/Tehran")
+IRAN_TZ = _irantz
 
 app = FastAPI(title="Spider Gateway", docs_url=None, redoc_url=None)
 

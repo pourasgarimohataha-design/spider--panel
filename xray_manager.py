@@ -255,10 +255,11 @@ async def start_xray() -> bool:
         logger.info(f"Starting Xray-core: {' '.join(cmd)}")
 
         try:
-            with open(XRAY_LOG_PATH, "a") as log_f:
+            with open(XRAY_LOG_PATH, "a", encoding="utf-8") as log_f:
                 log_f.write(f"\n─── Xray started at {time.strftime('%Y-%m-%d %H:%M:%S')} ───\n")
                 _xray_process = subprocess.Popen(
                     cmd,
+                    encoding="utf-8", errors="replace",
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -266,7 +267,7 @@ async def start_xray() -> bool:
                     preexec_fn=os.setsid if sys.platform != "win32" else None,
                 )
             # Write PID
-            with open(XRAY_PID_PATH, "w") as pf:
+            with open(XRAY_PID_PATH, "w", encoding="utf-8") as pf:
                 pf.write(str(_xray_process.pid))
 
             # Brief wait to check if it starts successfully
@@ -274,7 +275,7 @@ async def start_xray() -> bool:
             if _xray_process.poll() is not None:
                 # Died immediately — read last few log lines
                 try:
-                    with open(XRAY_LOG_PATH, "r") as lf:
+                    with open(XRAY_LOG_PATH, "r", encoding="utf-8", errors="ignore") as lf:
                         lines = lf.readlines()
                         tail = "".join(lines[-20:])
                     logger.error(f"Xray-core died immediately. Last log lines:\n{tail}")
