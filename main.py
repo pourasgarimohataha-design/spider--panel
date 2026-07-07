@@ -9,14 +9,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import secrets
 import time
-import aiofiles
-from datetime import datetime, timedelta
 try:
-    from zoneinfo import ZoneInfo
-    _irantz = ZoneInfo("Asia/Tehran")
-except Exception:
-    from datetime import timezone, timedelta as _td
-    _irantz = timezone(_td(hours=3, minutes=30))
+    import aiofiles
+except ImportError:
+    # Minimal async file wrapper fallback
+    class _AioFile:
+        def __init__(self, path, mode='r'):
+            self.path = path
+            self.mode = mode
+            self.file = None
+        async def __aenter__(self):
+            self.file = open(self.path, self.mode, encoding='utf-8')
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            if self.file:
+                self.file.close()
+        async def read(self):
+            return self.file.read()
+        async def write(self, data):
+            return self.file.write(data)
+    class aiofiles:
+        @staticmethod
+        async def open(path, mode='r', **kwargs):
+            return _AioFile(path, mode)
+
+from xray_core import initialize_xray, start_xray, stop_xray, restart_xray, get_xray_status, get_xray_logs, update_xray_core, generate_xray_config, XRAY_CONFIG_PATH
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from urllib.parse import quote
 from collections import deque, defaultdict
 import base64
@@ -43,7 +62,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
 
-IRAN_TZ = _irantz
+IRAN_TZ = ZoneInfo("Asia/Tehran")
 
 app = FastAPI(title="Spider Gateway", docs_url=None, redoc_url=None)
 
@@ -179,6 +198,48 @@ async def save_state():
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 connections: dict = {}
+
+# ── Xray Management API ───────────────────────────────────────────────────────
+@app.post("/api/xray/start")
+async def api_start_xray():
+    result = await start_xray()
+    return JSONResponse(result)
+
+@app.post("/api/xray/stop")
+async def api_stop_xray():
+    result = await stop_xray()
+    return JSONResponse(result)
+
+@app.post("/api/xray/restart")
+async def api_restart_xray():
+    result = await restart_xray()
+    return JSONResponse(result)
+
+@app.get("/api/xray/status")
+async def api_xray_status():
+    status = await get_xray_status()
+    return JSONResponse(status)
+
+@app.get("/api/xray/logs")
+async def api_xray_logs(lines: int = 100):
+    logs = await get_xray_logs(lines)
+    return JSONResponse({"logs": logs})
+
+@app.post("/api/xray/update")
+async def api_update_xray():
+    result = await update_xray_core()
+    return JSONResponse(result)
+
+@app.post("/api/xray/config")
+async def api_xray_config(config: dict):
+    # Write config then validate
+    ok = await write_xray_config(config)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to write config")
+    valid, err = await validate_xray_config(config)
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"Config validation failed: {err}")
+    return JSONResponse({"ok": True, "message": "Config updated and valid"})
 stats = {
     "total_bytes": 0,
     "total_requests": 0,
@@ -316,31 +377,6 @@ async def require_auth(request: Request):
     return token
 
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
-
-
-async def _auto_install_xray_on_deploy():
-    """Background task: download and install Xray-core during deploy.
-
-    Runs once at startup if Xray is not already present. Does not block
-    the server from coming up — API is available while downloading.
-    After installation, the watcher (already started) will auto-start
-    Xray if there are Reality inbounds.
-    """
-    try:
-        from xray_manager import install_xray, get_local_version, start_xray, ensure_xray_running
-        logger.info("[deploy] Downloading Xray-core v26.3.27 ...")
-        ok = await install_xray(force=False)
-        if ok:
-            ver = await get_local_version()
-            logger.info(f"[deploy] Xray-core {ver} installed successfully")
-            # If there are already Reality inbounds, start Xray immediately
-            await ensure_xray_running()
-        else:
-            logger.error("[deploy] Xray-core installation failed — use panel UI to retry")
-    except Exception as exc:
-        logger.error(f"[deploy] Xray auto-install error: {exc}")
-
-
 @app.on_event("startup")
 async def startup():
     global http_client
@@ -350,20 +386,11 @@ async def startup():
         limits=limits, timeout=timeout, follow_redirects=True,
     )
     await load_state()
-
-    # ── Xray-core integration ──
+    # Initialize Xray Core (install if missing, start if auto-start enabled)
     try:
-        from xray_manager import install_xray, start_xray, start_watcher, is_installed
-        if await is_installed():
-            logger.info("Xray-core found — starting watcher")
-        else:
-            logger.info("Xray-core not found — auto-installing in background during deploy")
-            # Fire-and-forget: download + extract in background, don't block startup
-            asyncio.create_task(_auto_install_xray_on_deploy())
-        start_watcher()
-    except ImportError as e:
-        logger.warning(f"xray_manager not available: {e}")
-
+        await initialize_xray()
+    except Exception as e:
+        logger.error(f"Xray initialization failed: {e}")
     # Auto-create default inbound if none exist
     async with INBOUNDS_LOCK:
         if not INBOUNDS:
@@ -388,13 +415,6 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    # Stop Xray-core
-    try:
-        from xray_manager import stop_xray, stop_watcher
-        await stop_watcher()
-        await stop_xray()
-    except ImportError:
-        pass
     await save_state()
     if http_client:
         await http_client.aclose()
@@ -406,28 +426,6 @@ def get_host() -> str:
 def generate_uuid() -> str:
     """Generate a 32-char hex identifier (no dashes) — compatible with Xray/VLESS configs."""
     return secrets.token_hex(16)
-
-
-def generate_x25519_keys() -> tuple[str, str]:
-    """Generate an x25519 key pair for Reality protocol.
-
-    Returns (private_key_b64, public_key_b64) compatible with
-    xray-core / 3x-ui realitySettings.settings.publicKey.
-    """
-    import base64 as _b64
-    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-    from cryptography.hazmat.primitives import serialization
-    priv = X25519PrivateKey.generate()
-    priv_bytes = priv.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    pub_bytes = priv.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    return _b64.b64encode(priv_bytes).decode(), _b64.b64encode(pub_bytes).decode()
 
 
 def generate_random_path(prefix: str = "", length: int = 6) -> str:
@@ -445,7 +443,7 @@ def now_ir() -> datetime:
     return datetime.now(IRAN_TZ)
 
 def generate_vless_link(uuid: str, host: str, remark: str = "Spider", protocol: str = DEFAULT_PROTOCOL) -> str:
-    """می‌سازد VLESS share-link متناسب با پروتکل انتخاب‌شده (WS / XHTTP / Reality)."""
+    """می‌سازد VLESS share-link متناسب با پروتکل انتخاب‌شده (WS کلاسیک یا یکی از مدهای XHTTP)."""
     if protocol == "vless-ws":
         path = f"/ws/{uuid}"
         params = {
@@ -458,53 +456,10 @@ def generate_vless_link(uuid: str, host: str, remark: str = "Spider", protocol: 
             "fp": "chrome",
             "alpn": "http/1.1",
         }
-    elif protocol == "reality":
-        # Read Reality settings from the link itself (stored in LINKS)
-        link = LINKS.get(uuid, {})
-        rs = link.get("reality_settings", {}) or SETTINGS.get("reality", {})
-        xs = link.get("xhttp_settings", {}) or {}
-        pbk = rs.get("public_key", "")
-        sid = rs.get("short_id", "")
-        spx = rs.get("spiderx", "/")
-        fp = rs.get("fingerprint", "chrome")
-        xpath = xs.get("path") or "/"
-        xmode = xs.get("mode") or "auto"
-        # Auto-gen keys on the fly if missing
-        if not pbk:
-            priv, pub = generate_x25519_keys()
-            pbk = pub
-        if not sid:
-            sid = secrets.token_hex(5)[:10]
-        extra_obj = {
-            "xPaddingBytes": xs.get("xPaddingBytes", "100-1000"),
-            "mode": xmode,
-            "scMaxEachPostBytes": xs.get("scMaxEachPostBytes", "1000000"),
-        }
-        extra_raw = json.dumps(extra_obj, separators=(',', ':'))
-        params = {
-            "encryption": "none",
-            "security": "reality",
-            "sni": host,
-            "fp": fp,
-            "pbk": pbk,
-            "sid": sid,
-            "spx": spx,
-            "type": "xhttp",
-            "path": xpath,
-            "mode": xmode,
-            "extra": quote(extra_raw, safe=''),
-        }
     else:
         # xhttp-packet-up / xhttp-stream-up / xhttp-stream-one
         mode = protocol.replace("xhttp-", "")  # packet-up | stream-up | stream-one
         path = f"/xhttp-siz10/{mode}/{uuid}"
-        extra_obj = {
-            "xPaddingBytes": "100-1000",
-            "mode": mode,
-            "scMaxEachPostBytes": "1000000",
-        }
-        extra_raw = json.dumps(extra_obj, separators=(',', ':'))
-        extra = quote(extra_raw, safe='')
         params = {
             "encryption": "none",
             "security": "tls",
@@ -515,7 +470,6 @@ def generate_vless_link(uuid: str, host: str, remark: str = "Spider", protocol: 
             "sni": host,
             "fp": "chrome",
             "alpn": "h2,http/1.1",
-            "extra": extra,
         }
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     return f"vless://{uuid}@{host}:443?{query}#{quote(remark)}"
@@ -625,22 +579,8 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
     # Never use 0.0.0.0 or localhost in public configs
     if host in ("0.0.0.0", "127.0.0.1", "localhost", ""):
         host = CONFIG.get("host", "") or "SERVER_IP"
-    # Protocol: inbound protocol OVERRIDES user preference when an inbound is assigned.
-    # This ensures Reality inbounds always produce Reality configs with pbk/sid/spx.
-    inbound_proto = inbound.get("protocol") if inbound else None
-    user_proto = user.get("protocol")
-    # Use inbound protocol if assigned; fall back to user preference; then default
-    protocol = inbound_proto or user_proto or "vless"
-
-    # Belt-and-suspenders: even if protocol != "reality" explicitly, check whether
-    # the assigned inbound has reality_settings — some inbounds were migrated or
-    # manually set via security="reality" without updating the stored protocol field.
-    if protocol != "reality" and inbound:
-        rs_check = inbound.get("reality_settings", {})
-        ib_sec = inbound.get("security", "")
-        if ib_sec == "reality" or (rs_check and rs_check.get("public_key")):
-            protocol = "reality"
-
+    # Protocol from user FIRST, then inbound, then default
+    protocol = user.get("protocol") or (inbound.get("protocol") if inbound else None) or "vless"
     config_uuid = user.get("config_uuid", "")
     username = user.get("username", user_id)
     remark = quote(f"Spider-{username}")
@@ -669,118 +609,40 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
         USERS[user_id] = user
         asyncio.create_task(save_state())
 
-    # ── Reality Protocol (3x-ui compatible) ──
+    # ── Reality Protocol ──
     if protocol == "reality":
-        rs = inbound.get("reality_settings", {}) if inbound else {}
+        rs = inbound.get("reality_settings", {}) if inbound else SETTINGS.get("reality", {})
+        xs = inbound.get("xhttp_settings", {}) if inbound else SETTINGS.get("xhttp", {})
+        # Fallback to global if inbound settings are empty
         if not rs:
             rs = SETTINGS.get("reality", {})
-        # XHTTP settings — used only when transport is xhttp
-        xs = inbound.get("xhttp_settings", {}) if inbound else {}
         if not xs:
             xs = SETTINGS.get("xhttp", {})
-
-        # Extract Reality fields (matching 3x-ui streamSettings.realitySettings)
         reality_pbk = rs.get("public_key", "")
-        reality_sid = rs.get("short_id", "")
+        reality_sid = rs.get("short_id", "5a3ff5a13d")
         reality_spx = rs.get("spiderx", "/")
         reality_fp = (inbound.get("fingerprint") if inbound else None) or rs.get("fingerprint", "chrome")
-
-        # SNI — use user's sni if set, otherwise inbound's sni, then reality's serverNames, then default
-        if sni and sni != host:
-            sni_reality = sni
-        else:
-            # Read from inbound sni, then reality_settings (preferring server_names array, then sni key)
-            rs_sn = rs.get("server_names")
-            sni_from_rs = None
-            if isinstance(rs_sn, list) and len(rs_sn) > 0:
-                sni_from_rs = rs_sn[0]
-            elif isinstance(rs_sn, str) and rs_sn:
-                sni_from_rs = rs_sn
-            sni_reality = (inbound.get("sni") if inbound else None) or sni_from_rs or rs.get("sni") or "is1-ssl.mzstatic.com"
-
-        # Address — external_domain + external_port from inbound (matching 3x-ui)
-        ext_domain = (inbound.get("external_domain") if inbound else None) or (inbound.get("domain") if inbound else None) or host
-        ext_port = (inbound.get("external_port") if inbound else None) or (inbound.get("port") if inbound else None) or 443
-
-        # Transport — inherited from inbound network (defaults to xhttp for Reality)
-        rt = (inbound.get("network") if inbound else None) or "xhttp"
-
-        # Auto-generate missing Reality keys on-the-fly (like 3x-ui does)
-        # Save back to inbound in background so next config call uses persisted keys
-        need_save = False
+        sni_reality = sni if sni and sni != host else rs.get("sni", "is1-ssl.mzstatic.com")
+        ext_domain = (inbound.get("external_domain") if inbound else None) or (inbound.get("domain") if inbound else None) or rs.get("external_domain") or host
+        ext_port = (inbound.get("external_port") if inbound else None) or rs.get("external_port", 443) or 443
         if not reality_pbk or not reality_sid:
-            if not reality_pbk:
-                priv, pub = generate_x25519_keys()
-                reality_pbk = pub
-                rs["public_key"] = pub
-                rs["private_key"] = priv
-                need_save = True
-            if not reality_sid:
-                reality_sid = secrets.token_hex(5)[:10]
-                rs["short_id"] = reality_sid
-                need_save = True
-            if not rs.get("spiderx"):
-                rs["spiderx"] = "/"
-            if not rs.get("dest"):
-                rs["dest"] = "is1-ssl.mzstatic.com:443"
-            # Persist back to inbound / settings
-            if need_save:
-                if inbound:
-                    inbound["reality_settings"] = rs
-                else:
-                    SETTINGS["reality"] = rs
-                asyncio.create_task(save_state())
-                logger.info(f"Auto-generated Reality keys for inbound={inbound.get('name','?') if inbound else 'global'}")
-
-        # Build params matching 3x-ui applyShareRealityParams + applyXhttpExtraParams
-        params_parts = [
-            "encryption=none",
-            "security=reality",
-            f"sni={quote(sni_reality)}",
-            f"fp={reality_fp}",
-            f"pbk={reality_pbk}",
-            f"sid={reality_sid}",
-            f"spx={quote(reality_spx, safe='')}",
-        ]
-
+            return f"vless://{config_uuid}@{ext_domain}:{ext_port}?encryption=none&security=reality&sni={quote(sni_reality)}&fp={reality_fp}&pbk=MISSING_PBK&sid=MISSING_SID&type=tcp#{remark}"
+        rpath = stored_path if stored_path else xs.get("path", "/")
+        rt = user.get("transport_type") or (inbound.get("network") if inbound else None) or "xhttp"
         if rt == "xhttp":
-            # XHTTP path from inbound settings (NOT the generic stored_path)
-            xhttp_path = xs.get("path") or "/"
-            xhttp_mode = xs.get("mode") or "auto"
-            xpb = xs.get("xPaddingBytes") or "100-1000"
-            xsc = xs.get("scMaxEachPostBytes") or "1000000"
-
-            # Build extra JSON (3x-ui buildXhttpExtra style)
-            extra_obj = {"mode": xhttp_mode}
-            if xpb and xpb != "0-0":
-                extra_obj["xPaddingBytes"] = xpb
-            if xsc and xsc != "1000000":
-                extra_obj["scMaxEachPostBytes"] = xsc
-            # Always include defaults so clients get the correct padding
-            if "xPaddingBytes" not in extra_obj:
-                extra_obj["xPaddingBytes"] = "100-1000"
-            if "scMaxEachPostBytes" not in extra_obj:
-                extra_obj["scMaxEachPostBytes"] = "1000000"
-
-            extra_raw = json.dumps(extra_obj, separators=(',', ':'))
+            xpb = xs.get("xPaddingBytes", "100-1000")
+            xmod = xs.get("mode", "auto")
+            xsc = xs.get("scMaxEachPostBytes", "1000000")
+            extra_raw = '{{"xPaddingBytes":"{}","mode":"{}","scMaxEachPostBytes":"{}"}}'.format(xpb, xmod, xsc)
             extra = quote(extra_raw, safe='')
-
-            params_parts.extend([
-                "type=xhttp",
-                f"path={quote(xhttp_path, safe='')}",
-                f"mode={xhttp_mode}",
-                f"extra={extra}",
-            ])
+            params = (f"encryption=none&security=reality"
+                      f"&sni={quote(sni_reality)}&fp={reality_fp}"
+                      f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}"
+                      f"&type=xhttp&path={rpath}&mode={xmod}&extra={extra}")
         else:
-            params_parts.extend([
-                f"type={quote(rt)}",
-                "alpn=h2,http/1.1",
-            ])
-            # If using a custom path for non-xhttp Reality
-            if stored_path and stored_path != "/":
-                params_parts.append(f"path={quote(stored_path, safe='')}")
-
-        params = "&".join(params_parts)
+            params = (f"encryption=none&security=reality&type=tcp"
+                      f"&sni={quote(sni_reality)}&fp={reality_fp}&alpn=h2,http/1.1"
+                      f"&pbk={reality_pbk}&sid={reality_sid}&spx={quote(reality_spx, safe='')}")
         return f"vless://{config_uuid}@{ext_domain}:{ext_port}?{params}#{remark}"
 
     # ── VLESS ──
@@ -794,33 +656,17 @@ def generate_user_config(user_id: str, user: dict, inbound_id: str = None) -> st
             params = f"encryption=none&security=tls&type=tcp&host={quote(vless_host)}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1"
             return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         elif transport_type == "xhttp":
-            # Read xhttp settings from user's link in LINKS + inbound override
+            # Read xhttp settings from user's link in LINKS (sync access ok — single-thread)
             xh = {}
             lk = LINKS.get(config_uuid)
             if lk:
                 xh = lk.get("xhttp_settings", {})
-            # Inbound xhttp settings override link defaults
-            if inbound and inbound.get("xhttp_settings"):
-                xh.update(inbound["xhttp_settings"])
-
-            xhttp_path = xh.get("path") or stored_path or "/"
-            xhttp_mode = xh.get("mode") or "auto"
-            xpb = xh.get("xPaddingBytes") or "100-1000"
-            xsc = xh.get("scMaxEachPostBytes") or "1000000"
-
-            extra_obj = {"mode": xhttp_mode}
-            if xpb and xpb != "0-0":
-                extra_obj["xPaddingBytes"] = xpb
-            if xsc and xsc != "1000000":
-                extra_obj["scMaxEachPostBytes"] = xsc
-            if "xPaddingBytes" not in extra_obj:
-                extra_obj["xPaddingBytes"] = "100-1000"
-            if "scMaxEachPostBytes" not in extra_obj:
-                extra_obj["scMaxEachPostBytes"] = "1000000"
-
-            extra_raw = json.dumps(extra_obj, separators=(',', ':'))
+            xpad = xh.get("xPaddingBytes", "100-1000")
+            xmode = xh.get("mode", "auto")
+            xsc = xh.get("scMaxEachPostBytes", "1000000")
+            extra_raw = '{{"xPaddingBytes":"{}","mode":"{}","scMaxEachPostBytes":"{}"}}'.format(xpad, xmode, xsc)
             extra = quote(extra_raw, safe='')
-            params = f"encryption=none&security=tls&type=xhttp&host={quote(vless_host)}&path={quote(xhttp_path, safe='')}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1&mode={xhttp_mode}&extra={extra}"
+            params = f"encryption=none&security=tls&type=xhttp&host={quote(vless_host)}&path={quote(stored_path, safe='')}&sni={quote(sni)}&fp=chrome&alpn=h2,http/1.1&mode={xmode}&extra={extra}"
             return f"vless://{config_uuid}@{vless_host}:{vless_port}?{params}#{remark}"
         else:  # ws — config_uuid IS the path (same as reference RVG-main)
             ws_host = (inbound.get("domain") if inbound else None) or SETTINGS.get("domain") or host
@@ -1134,7 +980,7 @@ async def api_login(request: Request):
     token = await create_session()
     log_activity("auth", f"ورود موفق به پنل از {ip}", "ok")
     resp = JSONResponse({"ok": True})
-    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax", path="/")
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, httponly=True, sameset="lax", path="/")
     return resp
 
 @app.post("/api/logout")
@@ -1195,16 +1041,57 @@ async def get_stats(_=Depends(require_auth)):
     else:
         server_status = "healthy"
 
-    # Simulated system metrics
-    cpu_percent = round(min(conn_count * 0.3 + 5, 95), 1)
-    ram_percent = round(min(45 + (total_users * 0.5) + (conn_count * 0.1), 95), 1)
-    disk_percent = round(min(25 + (len(snap) * 0.02) + (total_users * 0.1), 90), 1)
-    uptime_secs = max(time.time() - stats["start_time"], 1)
-    network_mbps = round(total_bytes / uptime_secs * 8 / 1000000, 2)
-
     return {
-        "active_connections": len(connections),
-        "total_traffic_mb": round(stats["total_bytes"] / (1024 ** 2), 2),
+        "active_users": active_users,
+        "total_users": total_users,
+        "traffic_gb": traffic_usage_gb,
+        "server_status": server_status,
+    }
+
+# ── Xray Management Endpoints ─────────────────────────────────────────────────────
+@app.get("/api/xray/status")
+async def api_xray_status(_=Depends(require_auth)):
+    from xray_core import get_xray_status
+    return await get_xray_status()
+
+@app.post("/api/xray/start")
+async def api_xray_start(_=Depends(require_auth)):
+    from xray_core import start_xray
+    return await start_xray()
+
+@app.post("/api/xray/stop")
+async def api_xray_stop(_=Depends(require_auth)):
+    from xray_core import stop_xray
+    return await stop_xray()
+
+@app.post("/api/xray/restart")
+async def api_xray_restart(_=Depends(require_auth)):
+    from xray_core import restart_xray
+    return await restart_xray()
+
+@app.post("/api/xray/reload")
+async def api_xray_reload(_=Depends(require_auth)):
+    from xray_core import reload_xray_config
+    return await reload_xray_config()
+
+@app.get("/api/xray/logs")
+async def api_xray_logs(lines: int = 100, _=Depends(require_auth)):
+    from xray_core import get_xray_logs
+    return {"logs": await get_xray_logs(lines)}
+
+@app.post("/api/xray/test-config")
+async def api_xray_test_config(request: Request, _=Depends(require_auth)):
+    cfg = await request.json()
+    from xray_core import validate_xray_config
+    valid, err = await validate_xray_config(cfg)
+    return {"valid": valid, "error": err if not valid else None}
+
+# Helper to generate current Xray server config for initialization/start
+def generate_xray_server_config():
+    from xray_core import generate_xray_config
+    return generate_xray_config()
+
+# End of file
         "total_requests": stats["total_requests"],
         "total_errors": stats["total_errors"],
         "uptime": uptime(),
@@ -1312,14 +1199,6 @@ async def create_link(request: Request, _=Depends(require_auth)):
         protocol = DEFAULT_PROTOCOL
 
     uid = generate_uuid()
-    # Auto-set xhttp settings when using xhttp protocol
-    link_xhttp = {}
-    if protocol.startswith("xhttp-"):
-        link_xhttp = {
-            "xPaddingBytes": "100-1000",
-            "mode": protocol.replace("xhttp-", ""),
-            "scMaxEachPostBytes": "1000000",
-        }
     async with LINKS_LOCK:
         LINKS[uid] = {
             "label": label,
@@ -1332,7 +1211,6 @@ async def create_link(request: Request, _=Depends(require_auth)):
             "is_default": False,
             "sub_id": sub_id,
             "protocol": protocol,
-            "xhttp_settings": link_xhttp,
         }
 
     if sub_id:
@@ -1388,17 +1266,6 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
             link["label"] = str(body["label"])[:60]
         if "note" in body:
             link["note"] = str(body["note"])[:200]
-        if "protocol" in body:
-            p = str(body["protocol"])
-            if p in PROTOCOLS:
-                link["protocol"] = p
-                # Auto-set xhttp defaults when switching to xhttp protocol
-                if p.startswith("xhttp-"):
-                    link["xhttp_settings"] = {
-                        "xPaddingBytes": "100-1000",
-                        "mode": p.replace("xhttp-", ""),
-                        "scMaxEachPostBytes": "1000000",
-                    }
         if "reset_usage" in body and body["reset_usage"]:
             link["used_bytes"] = 0
             log_activity("link", f"مصرف کانفیگ «{label}» ریست شد", "info")
@@ -1544,27 +1411,27 @@ async def create_inbound(request: Request, _=Depends(require_auth)):
     external_port = int(body.get("external_port") or 443)
     fingerprint = str(body.get("fingerprint") or "chrome").strip()
     reality_settings = body.get("reality_settings", {}) if isinstance(body.get("reality_settings"), dict) else {}
-    # Normalize: accept short_ids (frontend sends this) → map to short_id
-    if "short_ids" in reality_settings and "short_id" not in reality_settings:
-        reality_settings["short_id"] = reality_settings.pop("short_ids")
-    # Normalize: accept server_names (frontend sends array) → store as sni + server_names
-    if "server_names" in reality_settings:
-        sn_list = reality_settings["server_names"]
-        if isinstance(sn_list, list) and len(sn_list) > 0:
-            reality_settings["sni"] = str(sn_list[0])
-        elif isinstance(sn_list, str):
-            reality_settings["sni"] = sn_list
-        reality_settings.setdefault("server_names", sn_list)
     xhttp_settings = body.get("xhttp_settings", {}) if isinstance(body.get("xhttp_settings"), dict) else {}
     ws_settings = body.get("ws_settings", {}) if isinstance(body.get("ws_settings"), dict) else {}
     grpc_settings = body.get("grpc_settings", {}) if isinstance(body.get("grpc_settings"), dict) else {}
 
     # Auto-generate Reality key pair + short_id if protocol is reality
     if protocol == "reality":
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
         if not reality_settings.get("private_key") or not reality_settings.get("public_key"):
-            priv, pub = generate_x25519_keys()
-            reality_settings["private_key"] = priv
-            reality_settings["public_key"] = pub
+            priv = X25519PrivateKey.generate()
+            priv_bytes = priv.private_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PrivateFormat.Raw,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            pub_bytes = priv.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            reality_settings["private_key"] = base64.b64encode(priv_bytes).decode()
+            reality_settings["public_key"] = base64.b64encode(pub_bytes).decode()
             logger.info("Auto-generated Reality x25519 key pair for inbound")
         if not reality_settings.get("short_id"):
             reality_settings["short_id"] = secrets.token_hex(5)[:10]  # 10-char hex like 3x-ui
@@ -1625,6 +1492,17 @@ async def update_inbound(inbound_id: str, request: Request, _=Depends(require_au
             ib["network"] = str(body["network"]).lower()
         if "security" in body:
             ib["security"] = str(body["security"]).lower()
+        # Reality protocol must always use security="reality"
+        if ib.get("protocol") == "reality":
+            ib["security"] = "reality"
+            # Auto-update reality_settings with short_id/spiderx if not present
+            rs = ib.setdefault("reality_settings", {})
+            if not rs.get("short_id"):
+                rs["short_id"] = secrets.token_hex(5)[:10]
+            rs.setdefault("spiderx", "/")
+            rs.setdefault("dest", "is1-ssl.mzstatic.com:443")
+            if ib.get("network") not in ("tcp", "xhttp", "grpc"):
+                ib["network"] = "tcp"
         if "domain" in body:
             ib["domain"] = str(body["domain"]).strip()
         if "external_domain" in body:
@@ -1632,54 +1510,17 @@ async def update_inbound(inbound_id: str, request: Request, _=Depends(require_au
         if "sni" in body:
             ib["sni"] = str(body["sni"]).strip()
         if "external_port" in body:
-            try:
-                ib["external_port"] = int(body["external_port"])
-            except (ValueError, TypeError):
-                pass
+            ib["external_port"] = int(body["external_port"])
         if "fingerprint" in body:
             ib["fingerprint"] = str(body["fingerprint"]).strip()
-
-        # Merge reality settings from body — filter out empty string values to
-        # avoid wiping auto-generated keys when the frontend sends blanks
         if "reality_settings" in body and isinstance(body["reality_settings"], dict):
-            incoming = {}
-            for k, v in body["reality_settings"].items():
-                if k == "short_ids" and v:
-                    incoming["short_id"] = v
-                elif v:  # skip empty strings / None
-                    incoming[k] = v
-            # Normalize server_names -> sni
-            if "server_names" in incoming:
-                sn = incoming["server_names"]
-                if isinstance(sn, list) and len(sn) > 0:
-                    incoming["sni"] = str(sn[0])
-            if incoming:
-                ib.setdefault("reality_settings", {}).update(incoming)
-
-        # Network-specific settings
+            ib["reality_settings"] = body["reality_settings"]
         if "xhttp_settings" in body and isinstance(body["xhttp_settings"], dict):
             ib["xhttp_settings"] = body["xhttp_settings"]
         if "ws_settings" in body and isinstance(body["ws_settings"], dict):
             ib["ws_settings"] = body["ws_settings"]
         if "grpc_settings" in body and isinstance(body["grpc_settings"], dict):
             ib["grpc_settings"] = body["grpc_settings"]
-
-        # ── Reality auto-gen (MUST run AFTER all merges) ──
-        if ib.get("protocol") == "reality" or ib.get("security") == "reality":
-            ib["security"] = "reality"
-            ib["protocol"] = "reality"
-            rs = ib.setdefault("reality_settings", {})
-            # Generate x25519 key pair if still missing
-            if not rs.get("private_key") or not rs.get("public_key"):
-                priv, pub = generate_x25519_keys()
-                rs["private_key"] = priv
-                rs["public_key"] = pub
-            rs.setdefault("short_id", secrets.token_hex(5)[:10])
-            rs.setdefault("spiderx", "/")
-            rs.setdefault("dest", "is1-ssl.mzstatic.com:443")
-            if ib.get("network") not in ("tcp", "xhttp", "grpc"):
-                ib["network"] = "tcp"
-
     await save_state()
     log_activity("inbound", f"اینباند «{ib.get('name', inbound_id)}» ویرایش شد", "info")
     return {"ok": True}
@@ -1827,18 +1668,6 @@ async def create_user(request: Request, _=Depends(require_auth)):
     if concurrent_connections < 1:
         concurrent_connections = 1
 
-    # When an inbound is assigned, override user protocol/transport with inbound settings.
-    # This ensures Reality inbounds always produce Reality configs with pbk/sid/spx.
-    if inbound_id:
-        ib = INBOUNDS.get(inbound_id)
-        if ib:
-            ib_proto = ib.get("protocol")
-            if ib_proto and ib_proto in USER_PROTOCOLS:
-                protocol = ib_proto
-            ib_net = ib.get("network")
-            if ib_net and ib_net in ("ws", "grpc", "tcp", "xhttp"):
-                transport_type = ib_net
-
     user_id = generate_short_id()
     config_uuid = generate_uuid()
     subscription_uuid = secrets.token_urlsafe(16)
@@ -1902,24 +1731,12 @@ async def create_user(request: Request, _=Depends(require_auth)):
     # Auto-create matching link so relay can find it
     async with LINKS_LOCK:
         link_xhttp = {}
-        link_reality = {}
-        if transport_type == "xhttp" or protocol == "reality":
+        if transport_type == "xhttp":
             link_xhttp = {
                 "xPaddingBytes": "100-1000",
                 "mode": "auto",
                 "scMaxEachPostBytes": "1000000",
             }
-        # If protocol is reality, also store reality_settings from the assigned inbound
-        if protocol == "reality" and inbound_id:
-            ib = INBOUNDS.get(inbound_id)
-            if ib:
-                ib_rs = ib.get("reality_settings", {})
-                link_reality = {
-                    "public_key": ib_rs.get("public_key", ""),
-                    "short_id": ib_rs.get("short_id", ""),
-                    "spiderx": ib_rs.get("spiderx", "/"),
-                    "fingerprint": ib.get("fingerprint", "chrome"),
-                }
         LINKS[config_uuid] = {
             "label": username,
             "limit_bytes": traffic_limit_bytes,
@@ -1933,7 +1750,6 @@ async def create_user(request: Request, _=Depends(require_auth)):
             "protocol": protocol,
             "transport_type": transport_type,
             "xhttp_settings": link_xhttp,
-            "reality_settings": link_reality,
             "path": _path,
             "user_id": user_id,
         }
@@ -1995,6 +1811,60 @@ async def reset_user_traffic(user_id: str, _=Depends(require_auth)):
     return {"ok": True, "user_id": user_id, "traffic_used_bytes": 0}
 
 @app.delete("/api/users/{user_id}")
+@app.patch("/api/users/{user_id}")
+async def edit_user(user_id: str, request: Request, _=Depends(require_auth)):
+    """Edit an existing user."""
+    body = await request.json()
+    async with USERS_LOCK:
+        if user_id not in USERS:
+            raise HTTPException(status_code=404, detail="user not found")
+        u = USERS[user_id]
+        if "username" in body:
+            u["username"] = str(body["username"]).strip()[:40]
+        if "traffic_limit_gb" in body:
+            gb = float(body["traffic_limit_gb"])
+            u["traffic_limit_bytes"] = int(gb * 1024**3) if gb > 0 else 0
+        if "expire_days" in body:
+            days = int(body["expire_days"])
+            u["expire_at"] = (datetime.now() + timedelta(days=days)).isoformat() if days > 0 else None
+        if "protocol" in body:
+            p = str(body["protocol"]).lower()
+            if p in USER_PROTOCOLS:
+                u["protocol"] = p
+        if "status" in body:
+            u["status"] = str(body["status"])
+        if "sni" in body:
+            u["sni"] = str(body["sni"]).strip()
+        if "path" in body:
+            # Update PATH_INDEX when path changes
+            old_path = (u.get("path") or "").strip().lstrip("/")
+            new_path = str(body["path"]).strip().lstrip("/")
+            u["path"] = new_path
+            if old_path:
+                PATH_INDEX.pop(old_path, None)
+            if new_path:
+                PATH_INDEX[new_path] = u.get("config_uuid", user_id)
+        if "transport_type" in body:
+            u["transport_type"] = str(body["transport_type"]).strip().lower()
+        if "concurrent_connections" in body:
+            u["concurrent_connections"] = max(1, int(body["concurrent_connections"]))
+        if "reset_traffic" in body and body["reset_traffic"]:
+            u["traffic_used_bytes"] = 0
+    asyncio.create_task(save_state())
+    return {"ok": True, "user_id": user_id}
+
+@app.get("/api/users/{user_id}")
+async def get_user(user_id: str, _=Depends(require_auth)):
+    """Get single user details."""
+    async with USERS_LOCK:
+        if user_id not in USERS:
+            raise HTTPException(status_code=404, detail="user not found")
+        u = dict(USERS[user_id])
+        u["user_id"] = user_id
+        u["password_hash"] = None
+        return u
+
+
 async def delete_user(user_id: str, _=Depends(require_auth)):
     """Delete a user permanently."""
     async with USERS_LOCK:
@@ -2013,15 +1883,7 @@ async def delete_user(user_id: str, _=Depends(require_auth)):
     # Delete matching link
     if config_uuid:
         async with LINKS_LOCK:
-            link = LINKS.pop(config_uuid, None)
-            # Also remove from any SUB it belonged to
-            if link and link.get("sub_id"):
-                async with SUBS_LOCK:
-                    sub = SUBS.get(link["sub_id"])
-                    if sub:
-                        ids = sub.get("link_ids", [])
-                        if config_uuid in ids:
-                            ids.remove(config_uuid)
+            LINKS.pop(config_uuid, None)
     asyncio.create_task(save_state())
     log_activity("user", f"کاربر «{username}» حذف شد", "err")
     return {"ok": True, "deleted": user_id}
@@ -2060,6 +1922,7 @@ async def edit_user(user_id: str, request: Request, _=Depends(require_auth)):
 
         if "username" in body:
             new_name = str(body["username"]).strip()[:40]
+            # Check duplicate
             for oid, ou in USERS.items():
                 if oid != user_id and ou.get("username") == new_name:
                     raise HTTPException(status_code=409, detail="Username already exists")
@@ -2098,46 +1961,6 @@ async def edit_user(user_id: str, request: Request, _=Depends(require_auth)):
         if "concurrent_connections" in body:
             cc = int(body["concurrent_connections"] or 3)
             u["concurrent_connections"] = max(1, cc)
-
-        if "reset_traffic" in body and body["reset_traffic"]:
-            u["traffic_used_bytes"] = 0
-
-    # Also sync link if exists
-    config_uuid = u.get("config_uuid")
-    if config_uuid:
-        async with LINKS_LOCK:
-            link = LINKS.get(config_uuid)
-            if link:
-                if "username" in body:
-                    link["label"] = u["username"]
-                if "traffic_limit_gb" in body:
-                    link["limit_bytes"] = u["traffic_limit_bytes"]
-                if "expire_days" in body:
-                    link["expires_at"] = u["expire_at"]
-                if "status" in body:
-                    link["active"] = (u["status"] == "active")
-                if "transport_type" in body:
-                    link["transport_type"] = u["transport_type"]
-                    # Auto-set xhttp_settings when switching to xhttp
-                    if u["transport_type"] == "xhttp":
-                        link["xhttp_settings"] = {
-                            "xPaddingBytes": "100-1000",
-                            "mode": "auto",
-                            "scMaxEachPostBytes": "1000000",
-                        }
-                if "protocol" in body:
-                    link["protocol"] = u["protocol"]
-                    # Sync reality_settings from inbound when protocol is reality
-                    if u["protocol"] == "reality" and u.get("inbound_id"):
-                        ib = INBOUNDS.get(u["inbound_id"])
-                        if ib:
-                            ib_rs = ib.get("reality_settings", {})
-                            link["reality_settings"] = {
-                                "public_key": ib_rs.get("public_key", ""),
-                                "short_id": ib_rs.get("short_id", ""),
-                                "spiderx": ib_rs.get("spiderx", "/"),
-                                "fingerprint": ib.get("fingerprint", "chrome"),
-                            }
 
     asyncio.create_task(save_state())
     log_activity("user", f"کاربر «{old_username}» ویرایش شد", "info")
@@ -3258,125 +3081,69 @@ def generate_xray_server_config(inbound_id: str = None) -> dict:
     inbound = None
     if inbound_id:
         inbound = INBOUNDS.get(inbound_id)
-
-    inbound_list = []
-    if not inbound:
-        for iid, ib in INBOUNDS.items():
-            obj = _build_xray_inbound(ib, iid)
-            if obj:
-                inbound_list.append(obj)
-    else:
-        obj = _build_xray_inbound(inbound, inbound_id)
-        if obj:
-            inbound_list.append(obj)
-
-    # Stats API inbound (loopback only) — so panel can query real traffic
-    stats_api = {
-        "tag": "api",
-        "listen": "127.0.0.1",
-        "port": 10085,
-        "protocol": "dokodemo-door",
-        "settings": {"address": "127.0.0.1"},
-    }
-    inbound_list.append(stats_api)
-
+    
+    host = SETTINGS.get("domain") or get_host()
     xray_config = {
         "log": {"loglevel": "warning"},
-        "api": {
-            "tag": "api",
-            "services": ["HandlerService", "LoggerService", "StatsService"],
-        },
-        "stats": {},
-        "policy": {
-            "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}},
-            "system": {"statsInboundUplink": True, "statsInboundDownlink": True},
-        },
-        "inbounds": inbound_list,
-        "outbounds": [
-            {"protocol": "freedom", "tag": "direct"},
-        ],
+        "inbounds": [],
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
         "routing": {
             "domainStrategy": "IPIfNonMatch",
-            "rules": [
-                {"type": "field", "inboundTag": ["api"], "outboundTag": "api", "domain": ["127.0.0.1"]},
-            ],
-        },
+            "rules": []
+        }
     }
+    
+    if not inbound:
+        # Generate for all inbounds
+        for iid, ib in INBOUNDS.items():
+            _add_inbound_to_xray(xray_config, ib, iid, host)
+    else:
+        _add_inbound_to_xray(xray_config, inbound, inbound_id, host)
+    
     return xray_config
 
 
-def _build_xray_inbound(ib: dict, iid: str) -> dict | None:
-    """Build a single Xray inbound dict from panel inbound settings."""
-    security = ib.get("security", "tls")
-    is_reality = (security == "reality" or ib.get("protocol") == "reality")
-
-    # Xray-core protocol: Reality is a transport layer — underlying protocol
-    # is always vless (or trojan). We default to vless.
-    if is_reality:
-        protocol = "vless"
-    else:
-        protocol = ib.get("protocol", "vless")
-        if protocol not in ("vless", "vmess", "trojan"):
-            return None  # skip unsupported
-
+def _add_inbound_to_xray(cfg: dict, ib: dict, iid: str, host: str):
+    """Add a single inbound to an Xray config dict."""
+    protocol = ib.get("protocol", "vless")
     port = int(ib.get("port", 443))
     network = ib.get("network", "ws")
-    domain = ib.get("domain", "")
+    security = ib.get("security", "tls")
+    domain = ib.get("domain", host)
     sni_val = ib.get("sni", domain)
     fingerprint = ib.get("fingerprint", "chrome")
-    rs = ib.get("reality_settings", {}) if is_reality else {}
+    rs = ib.get("reality_settings", {}) if protocol == "reality" else {}
     ws_settings = ib.get("ws_settings", {})
     xh_settings = ib.get("xhttp_settings", {})
     grpc_settings = ib.get("grpc_settings", {})
-
-    # Build client list from ACTUAL panel users assigned to this inbound
-    clients = []
-    for uid, u in USERS.items():
-        if u.get("inbound_id") == iid:
-            cuuid = u.get("config_uuid") or uid
-            c = {"id": cuuid, "email": uid}
-            if protocol == "vless":
-                c["flow"] = ""
-            elif protocol == "vmess":
-                c["alterId"] = 0
-            elif protocol == "trojan":
-                c["password"] = u.get("password_raw", secrets.token_urlsafe(16))
-            clients.append(c)
-
-    # If no real clients yet, add a placeholder so Xray doesn't reject the config
-    if not clients:
-        placeholder_id = generate_uuid()
-        c = {"id": placeholder_id, "email": f"placeholder-{iid}"}
-        if protocol == "vless":
-            c["flow"] = ""
-        elif protocol == "vmess":
-            c["alterId"] = 0
-        elif protocol == "trojan":
-            c["password"] = secrets.token_urlsafe(16)
-        clients.append(c)
-
+    
     inbound_obj = {
         "tag": f"inbound-{iid}",
-        "listen": "0.0.0.0",
         "port": port,
         "protocol": protocol,
-        "settings": {"clients": clients, "decryption": "none"},
-        "streamSettings": {},
-        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+        "settings": {"clients": [], "decryption": "none"},
+        "streamSettings": {}
     }
-
-    # ── Stream / Security settings ──
-    if is_reality:
-        sn_raw = rs.get("server_names")
-        if not sn_raw or (isinstance(sn_raw, list) and len(sn_raw) == 0):
-            sn_raw = [rs.get("sni", "is1-ssl.mzstatic.com")]
-        elif isinstance(sn_raw, str):
-            sn_raw = [sn_raw]
-
-        pk = rs.get("private_key", "")
-        if not pk:
-            logger.warning(f"Xray inbound {iid}: missing privateKey — Reality won't work")
-
+    
+    # Protocol-specific client settings
+    if protocol in ("vless", "vmess", "trojan"):
+        # Generate some default client entries
+        client_count = 10
+        clients = []
+        for i in range(client_count):
+            uid = generate_uuid()
+            client = {"id": uid}
+            if protocol == "vless":
+                client["flow"] = ""
+            elif protocol == "vmess":
+                client["alterId"] = 0
+            elif protocol == "trojan":
+                client["password"] = secrets.token_urlsafe(16)
+            clients.append(client)
+        inbound_obj["settings"]["clients"] = clients
+    
+    # Transport / Stream settings
+    if protocol == "reality":
         inbound_obj["streamSettings"] = {
             "network": network if network in ("tcp", "xhttp", "grpc") else "tcp",
             "security": "reality",
@@ -3384,12 +3151,11 @@ def _build_xray_inbound(ib: dict, iid: str) -> dict | None:
                 "show": False,
                 "dest": rs.get("dest", "is1-ssl.mzstatic.com:443"),
                 "xver": 0,
-                "serverNames": sn_raw,
-                "privateKey": pk,
+                "serverNames": [rs.get("sni", "is1-ssl.mzstatic.com")],
+                "privateKey": rs.get("private_key", ""),
                 "shortIds": [rs.get("short_id", "5a3ff5a13d")],
-                "fingerprint": "chrome",
                 "spiderX": rs.get("spiderx", "/"),
-            },
+            }
         }
         if network == "xhttp":
             inbound_obj["streamSettings"]["xhttpSettings"] = {
@@ -3401,35 +3167,47 @@ def _build_xray_inbound(ib: dict, iid: str) -> dict | None:
                 "scMaxBufferedPosts": xh_settings.get("scMaxBufferedPosts", 30),
                 "scStreamUpServerSecs": xh_settings.get("scStreamUpServerSecs", "20-80"),
             }
-
     elif security == "tls":
         inbound_obj["streamSettings"] = {
             "network": network,
             "security": "tls",
-            "tlsSettings": {"certificates": [{"certificateFile": "/etc/xray/cert.pem", "keyFile": "/etc/xray/key.pem"}]},
+            "tlsSettings": {
+                "certificates": [{
+                    "certificateFile": "/etc/xray/cert.pem",
+                    "keyFile": "/etc/xray/key.pem"
+                }]
+            }
         }
         if network == "ws":
             inbound_obj["streamSettings"]["wsSettings"] = {
                 "path": ws_settings.get("path", "/"),
-                "headers": {"Host": ws_settings.get("host", domain)},
+                "headers": {"Host": ws_settings.get("host", domain)}
+            }
+        elif network == "grpc":
+            inbound_obj["streamSettings"]["grpcSettings"] = {
+                "serviceName": grpc_settings.get("serviceName", "")
             }
         elif network == "xhttp":
             inbound_obj["streamSettings"]["xhttpSettings"] = {
                 "path": xh_settings.get("path", "/"),
                 "host": xh_settings.get("host", domain),
                 "mode": xh_settings.get("mode", "auto"),
+                "xPaddingBytes": xh_settings.get("xPaddingBytes", "100-1000"),
+                "scMaxEachPostBytes": xh_settings.get("scMaxEachPostBytes", "1000000"),
             }
-        elif network == "grpc":
-            inbound_obj["streamSettings"]["grpcSettings"] = {
-                "serviceName": grpc_settings.get("serviceName", ""),
-            }
-
     else:
+        # No TLS (raw)
         inbound_obj["streamSettings"] = {"network": network}
         if network == "ws":
             inbound_obj["streamSettings"]["wsSettings"] = {"path": ws_settings.get("path", "/")}
-
-    return inbound_obj
+    
+    # Add sniffing
+    inbound_obj["sniffing"] = {
+        "enabled": True,
+        "destOverride": ["http", "tls", "quic"]
+    }
+    
+    cfg["inbounds"].append(inbound_obj)
 
 
 @app.post("/api/tools/generate-xray-config")
@@ -3478,6 +3256,43 @@ async def gen_xray_keys(_=Depends(require_auth)):
         result["public_key"] = ""
         result["note"] = "cryptography not installed"
     return result
+
+# Xray Core Management API Endpoints
+
+@app.get("/api/xray/status")
+async def api_xray_status(_=Depends(require_auth)):
+    """Return Xray installation, version, running state, and health info."""
+    return await get_xray_status()
+
+@app.post("/api/xray/start")
+async def api_xray_start(_=Depends(require_auth)):
+    """Start Xray process using current inbounds config."""
+    result = await start_xray()
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to start Xray"))
+    return {"ok": True, "message": result.get("message", "Xray started"), "pid": result.get("pid")}
+
+@app.post("/api/xray/stop")
+async def api_xray_stop(_=Depends(require_auth)):
+    """Stop Xray process if running."""
+    result = await stop_xray()
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to stop Xray"))
+    return {"ok": True, "message": result.get("message", "Xray stopped")}
+
+@app.post("/api/xray/restart")
+async def api_xray_restart(_=Depends(require_auth)):
+    """Restart Xray process."""
+    result = await restart_xray()
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to restart Xray"))
+    return {"ok": True, "message": result.get("message", "Xray restarted"), "pid": result.get("pid")}
+
+@app.get("/api/xray/logs")
+async def api_xray_logs(lines: int = 100, _=Depends(require_auth)):
+    """Fetch last N lines from Xray log file."""
+    logs = await get_xray_logs(lines)
+    return {"ok": True, "lines": lines, "logs": logs}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3765,129 +3580,56 @@ async def scan_railway_ips(_=Depends(require_auth)):
 
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# XRAY-CORE MANAGEMENT API
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Xray Management API Endpoints �n# Added for status, control, config testing, and logs
 
 @app.get("/api/xray/status")
-async def xray_status(_=Depends(require_auth)):
-    """Get Xray-core installation and runtime status."""
-    try:
-        from xray_manager import get_status
-        return {"ok": True, **await get_status()}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-
-
-@app.post("/api/xray/install")
-async def xray_install(_=Depends(require_auth)):
-    """Download and install Xray-core."""
-    try:
-        from xray_manager import install_xray, get_local_version
-        ok = await install_xray(force=False)
-        ver = await get_local_version()
-        return {"ok": ok, "version": ver, "message": "Xray-core installed" if ok else "Installation failed"}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
+async def api_xray_status(_=Depends(require_auth)):
+    """Return current Xray status (installed, version, running, pid)."""
+    return await get_xray_status()
 
 @app.post("/api/xray/start")
-async def xray_start(_=Depends(require_auth)):
-    """Start Xray-core service."""
-    try:
-        from xray_manager import start_xray, get_status
-        ok = await start_xray()
-        status = await get_status()
-        return {"ok": ok, **status, "message": "Xray-core started" if ok else "Failed to start"}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
+async def api_xray_start(_=Depends(require_auth)):
+    """Start Xray process using existing config (generate if missing)."""
+    # Ensure config exists
+    if not XRAY_CONFIG_PATH.exists():
+        success = await generate_xray_config()
+        if not success:
+            raise HTTPException(status_code=500, detail="Config generation failed")
+    return await start_xray()
 
 @app.post("/api/xray/stop")
-async def xray_stop(_=Depends(require_auth)):
-    """Stop Xray-core service."""
-    try:
-        from xray_manager import stop_xray
-        ok = await stop_xray()
-        return {"ok": ok, "message": "Xray-core stopped" if ok else "Was not running"}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
+async def api_xray_stop(_=Depends(require_auth)):
+    """Stop Xray process if running."""
+    return await stop_xray()
 
 @app.post("/api/xray/restart")
-async def xray_restart(_=Depends(require_auth)):
-    """Restart Xray-core service."""
-    try:
-        from xray_manager import restart_xray, get_status
-        ok = await restart_xray()
-        status = await get_status()
-        return {"ok": ok, **status, "message": "Xray-core restarted" if ok else "Restart failed"}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+async def api_xray_restart(_=Depends(require_auth)):
+    """Restart Xray (stop then start)."""
+    return await restart_xray()
 
+@app.post("/api/xray/reload")
+async def api_xray_reload(_=Depends(require_auth)):
+    """Regenerate config and restart Xray to apply changes."""
+    ok = await generate_xray_config()
+    if not ok:
+        raise HTTPException(status_code=500, detail="Config validation failed")
+    await restart_xray()
+    return {"msg": "reloaded"}
 
 @app.get("/api/xray/logs")
-async def xray_logs(limit: int = 100, _=Depends(require_auth)):
-    """Get recent Xray-core logs."""
-    try:
-        from xray_manager import XRAY_LOG_PATH
-        if not XRAY_LOG_PATH.exists():
-            return {"ok": True, "lines": [], "message": "No logs yet"}
-        with open(XRAY_LOG_PATH, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-        tail = lines[-limit:] if len(lines) > limit else lines
-        return {"ok": True, "lines": [l.rstrip() for l in tail], "total_lines": len(lines)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+async def api_xray_logs(tail: int = 100, _=Depends(require_auth)):
+    """Return last N lines of Xray error log."""
+    return {"logs": await get_xray_logs(tail)}
 
-
-@app.get("/api/xray/config")
-async def xray_server_config(_=Depends(require_auth)):
-    """Get the current Xray-core server config.json (the one on disk)."""
-    try:
-        from xray_manager import XRAY_CONFIG_PATH
-        if not XRAY_CONFIG_PATH.exists():
-            return {"ok": False, "error": "Config not generated yet"}
-        with open(XRAY_CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = json.loads(f.read())
-        return {"ok": True, "config": config, "config_json": json.dumps(config, indent=2, ensure_ascii=False)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.get("/api/xray/traffic")
-async def xray_traffic(_=Depends(require_auth)):
-    """Get real-time per-user traffic stats from Xray-core."""
-    try:
-        from xray_manager import query_traffic_stats
-        stats = await query_traffic_stats()
-        return {"ok": True, "users": stats, "count": len(stats)}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.post("/api/xray/traffic/sync")
-async def xray_traffic_sync(_=Depends(require_auth)):
-    """Sync real Xray-core traffic into panel user records."""
-    try:
-        from xray_manager import sync_traffic_to_panel
-        await sync_traffic_to_panel()
-        return {"ok": True, "message": "Traffic synced from Xray-core"}
-    except ImportError:
-        return {"ok": False, "error": "xray_manager not available"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
+@app.post("/api/xray/test-config")
+async def api_xray_test_config(_=Depends(require_auth)):
+    """Validate current Xray config without affecting running process."""
+    if not XRAY_CONFIG_PATH.exists():
+        raise HTTPException(status_code=400, detail="Config file missing")
+    result = await run_cmd([str(XRAY_PATH), "-test", "-config", str(XRAY_CONFIG_PATH)])
+    if result["code"] != 0:
+        raise HTTPException(status_code=400, detail=result["stderr"])
+    return {"msg": "config valid"}
 
 # Lazy XHTTP import (after all symbols defined)
 try:
