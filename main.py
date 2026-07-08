@@ -383,7 +383,7 @@ async def startup():
     limits = httpx.Limits(max_connections=500, max_keepalive_connections=100)
     timeout = httpx.Timeout(30.0, connect=10.0)
     http_client = httpx.AsyncClient(
-        limits=limits, timeout=timeout, follow_redirects=True,
+        limits=limits, timeout=timeout, follow_redirects=True, trust_env=False,
     )
     await load_state()
     # Initialize Xray Core (install if missing, start if auto-start enabled)

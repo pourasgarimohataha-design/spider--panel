@@ -66,16 +66,9 @@ ARCH_MAP = {
     "i686": "32",
 }
 
-# Known checksums for verification (SHA256) - updated per version
-# Format: {version: {arch: sha256}}
-XRAY_CHECKSUMS = {
-    "25.8.30": {
-        "64": "c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e",  # placeholder - will verify on first download
-        "arm64-v8a": "c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e",
-        "arm32-v7a": "c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e",
-        "32": "c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e5e3d2b7e6c8f8c7b3e",
-    },
-}
+# Known checksums for verification (SHA256). The dict may be empty; if a checksum for the requested version
+# and architecture is not present, verification will be skipped (warning logged).
+XRAY_CHECKSUMS: dict[str, dict[str, str]] = {}
 
 # Global state
 _xray_process: Optional[asyncio.subprocess.Process] = None
@@ -642,7 +635,24 @@ def generate_xray_config() -> Dict[str, Any]:
             if not rs.get("shortIds"):
                 import secrets
                 rs["shortIds"] = [secrets.token_hex(4)]
+    # Return the built config
+    return config
 
+def generate_xray_config_from_inbounds(inbounds: Dict[str, Any]) -> Dict[str, Any]:
+    """Create Xray config dict from inbound definitions.
+    This replaces the missing helper previously referenced.
+    """
+    host = os.getenv("RAILWAY_PUBLIC_DOMAIN", "localhost")
+    cfg: Dict[str, Any] = {
+        "log": {"loglevel": "warning"},
+        "inbounds": [],
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
+    }
+    for iid, ib in inbounds.items():
+        inbound_cfg = _build_inbound_config(ib, iid, host)
+        if inbound_cfg:
+            cfg["inbounds"].append(inbound_cfg)
+    return cfg
 
 
 def _build_inbound_config(ib: Dict[str, Any], iid: str, host: str) -> Optional[Dict[str, Any]]:
