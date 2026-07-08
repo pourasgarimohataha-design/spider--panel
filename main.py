@@ -442,37 +442,80 @@ def generate_random_path(prefix: str = "", length: int = 6) -> str:
 def now_ir() -> datetime:
     return datetime.now(IRAN_TZ)
 
-def generate_vless_link(uuid: str, host: str, remark: str = "Spider", protocol: str = DEFAULT_PROTOCOL) -> str:
-    """می‌سازد VLESS share-link متناسب با پروتکل انتخاب‌شده (WS کلاسیک یا یکی از مدهای XHTTP)."""
-    if protocol == "vless-ws":
-        path = f"/ws/{uuid}"
-        params = {
-            "encryption": "none",
-            "security": "tls",
-            "type": "ws",
-            "host": host,
-            "path": path,
-            "sni": host,
-            "fp": "chrome",
-            "alpn": "http/1.1",
-        }
-    else:
-        # xhttp-packet-up / xhttp-stream-up / xhttp-stream-one
-        mode = protocol.replace("xhttp-", "")  # packet-up | stream-up | stream-one
-        path = f"/xhttp-siz10/{mode}/{uuid}"
-        params = {
-            "encryption": "none",
-            "security": "tls",
-            "type": "xhttp",
-            "mode": mode,
-            "host": host,
-            "path": path,
-            "sni": host,
-            "fp": "chrome",
-            "alpn": "h2,http/1.1",
-        }
-    query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-    return f"vless://{uuid}@{host}:443?{query}#{quote(remark)}"
+def generate_vless_link(uuid: str, remark: str = "Spider", inbound_id: str | None = None) -> str:
+    """Generate a VLESS share‑link strictly based on the real Xray inbound config.
+
+    The link reflects:
+    - external domain & external port (public facing values)
+    - network (ws, xhttp, grpc, etc.)
+    - security (tls, reality) and all required reality params (pbk, sid, spx)
+    - transport‑specific fields (path, mode, serviceName, extra)
+    - fingerprint, sni, alpn where appropriate
+    """
+    import json
+    # Resolve inbound: use provided id, otherwise fall back to a deterministic default (first inbound)
+    inbound = None
+    if inbound_id:
+        inbound = INBOUNDS.get(inbound_id)
+    if not inbound:
+        inbound = next(iter(INBOUNDS.values())) if INBOUNDS else {}
+
+    # Resolve host and port (public values)
+    host = inbound.get("external_domain") or inbound.get("domain") or SETTINGS.get("domain") or get_host()
+    port = inbound.get("external_port", 443)
+    network = inbound.get("network", "ws")
+    security = inbound.get("security", "tls")
+    sni = inbound.get("sni") or host
+    fp = inbound.get("fingerprint", "chrome")
+
+    params: dict[str, str] = {
+        "encryption": "none",
+        "security": security,
+        "type": network,
+        "host": host,
+        "sni": sni,
+        "fp": fp,
+    }
+
+    # Transport specific handling
+    if network == "ws":
+        ws_path = inbound.get("ws_settings", {}).get("path", f"/ws/{uuid}")
+        params["path"] = ws_path
+        params["alpn"] = "http/1.1"
+    elif network == "xhttp":
+        xh = inbound.get("xhttp_settings", {})
+        params["mode"] = xh.get("mode", "auto")
+        params["path"] = xh.get("path", "/")
+        params["alpn"] = "h2,http/1.1"
+        # Extra settings (excluding the ones already used)
+        extra_dict = {k: v for k, v in xh.items() if k not in ("mode", "path")}
+        if extra_dict:
+            params["extra"] = quote(json.dumps(extra_dict, separators=(",", ":")))
+    elif network == "grpc":
+        params["serviceName"] = inbound.get("grpc_settings", {}).get("serviceName", "")
+
+    # Reality protocol – ensure required fields exist
+    if security == "reality":
+        rs = inbound.get("reality_settings", {})
+        # Required fields validation – if missing, raise clear error
+        missing = []
+        if not rs.get("privateKey"):
+            missing.append("pbk")
+        if not rs.get("shortIds"):
+            missing.append("sid")
+        if not rs.get("sni") and not rs.get("serverNames"):
+            missing.append("sni")
+        if missing:
+            raise ValueError(f"Reality configuration incomplete: missing {', '.join(missing)}")
+        params["pbk"] = rs.get("privateKey", "")
+        # shortIds is a list – take first element
+        short_ids = rs.get("shortIds", [])
+        params["sid"] = short_ids[0] if short_ids else ""
+        params["spx"] = quote(rs.get("spiderX", "/"))
+
+    # Build query string, skipping empty values
+    query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items() if v)
+    return f"vless://{uuid}@{host}:{port}?{query}#{quote(remark)}"
 
 def uptime() -> str:
     secs = int(time.time() - stats["start_time"])
@@ -801,7 +844,7 @@ async def subscription_handler(identifier: str, request: Request):
     if link and is_link_allowed(link):
         host = SETTINGS.get("domain") or get_host()
         proto = link.get("protocol", DEFAULT_PROTOCOL)
-        vless = generate_vless_link(identifier, host, remark=f"Spider-{link['label']}", protocol=proto)
+        vless = generate_vless_link(identifier, remark=f"Spider-{link['label']}")
         content = base64.b64encode(vless.encode()).decode()
         return Response(content=content, media_type="text/plain",
                         headers={"profile-title": quote(link["label"]), "support-url": "https://t.me/SpiderPanel"})
@@ -814,7 +857,7 @@ async def subscription_all(_=Depends(require_auth)):
     host = SETTINGS.get("domain") or get_host()
     async with LINKS_LOCK:
         lines = [
-            generate_vless_link(uid, host, remark=f"Spider-{d['label']}", protocol=d.get("protocol", DEFAULT_PROTOCOL))
+            generate_vless_link(uid, remark=f"Spider-{d['label']}")
             for uid, d in LINKS.items()
             if is_link_allowed(d)
         ]
@@ -956,7 +999,7 @@ async def sub_group_subscription(uuid_key: str, request: Request):
         for lid in link_ids:
             link = LINKS.get(lid)
             if link and is_link_allowed(link):
-                lines.append(generate_vless_link(lid, host, remark=f"Spider-{link['label']}", protocol=link.get("protocol", DEFAULT_PROTOCOL)))
+                lines.append(generate_vless_link(lid, remark=f"Spider-{link['label']}"))
 
     content = base64.b64encode("\n".join(lines).encode()).decode()
     return Response(
@@ -1203,7 +1246,7 @@ async def create_link(request: Request, _=Depends(require_auth)):
         "uuid": uid,
         **LINKS[uid],
         "expired": False,
-        "vless_link": generate_vless_link(uid, host, remark=f"Spider-{label}", protocol=protocol),
+        "vless_link": generate_vless_link(uid, remark=f"Spider-{label}"),
         "sub_url": f"https://{host}/sub/{uid}",
     }
 
@@ -1220,7 +1263,7 @@ async def list_links(_=Depends(require_auth)):
             **d,
             "protocol": proto,
             "expired": is_link_expired(d),
-            "vless_link": generate_vless_link(uid, host, remark=f"Spider-{d['label']}", protocol=proto),
+            "vless_link": generate_vless_link(uid, remark=f"Spider-{d['label']}"),
             "sub_url": f"https://{host}/sub/{uid}",
         })
     result.sort(key=lambda x: x["created_at"], reverse=True)
@@ -2061,7 +2104,7 @@ async def public_sub_data(uuid_key: str, request: Request):
             "limit_bytes": link.get("limit_bytes", 0),
             "limit_fmt": "∞" if link.get("limit_bytes", 0) == 0 else fmt_bytes(link["limit_bytes"]),
             "expires_at": link.get("expires_at"),
-            "vless_link": generate_vless_link(lid, host, remark=f"Spider-{link['label']}", protocol=proto),
+            "vless_link": generate_vless_link(lid, remark=f"Spider-{link['label']}"),
             "sub_url": f"https://{host}/sub/{lid}",
             "connections": conn_count,
         })
@@ -2341,7 +2384,7 @@ async def subsync_get_data():
             link = snap_links.get(lid)
             if link and is_link_allowed(link):
                 proto = link.get("protocol", DEFAULT_PROTOCOL)
-                configs.append(generate_vless_link(lid, host, remark=f"Spider-{link['label']}", protocol=proto))
+                configs.append(generate_vless_link(lid, remark=f"Spider-{link['label']}"))
         result.append({"name": s["name"], "desc": s.get("desc", ""), "configs": configs, "uuid_key": s.get("uuid_key", ""), "sub_id": sid})
     return {"subs": result}
 
@@ -2371,7 +2414,7 @@ async def subsync_get_sub(name: str):
             link = snap.get(lid)
             if link and is_link_allowed(link):
                 proto = link.get("protocol", DEFAULT_PROTOCOL)
-                configs.append(generate_vless_link(lid, host, remark=f"Spider-{link['label']}", protocol=proto))
+                configs.append(generate_vless_link(lid, remark=f"Spider-{link['label']}"))
     
     # Also check USERS — serve user config directly
     if not configs:
