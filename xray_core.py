@@ -616,25 +616,52 @@ def generate_xray_config() -> Dict[str, Any]:
     for inbound in config.get("inbounds", []):
         if inbound.get("protocol") == "reality":
             rs = inbound.get("streamSettings", {}).get("realitySettings", {})
-            if not rs.get("privateKey"):
-                # Generate X25519 key pair using Xray binary
-                result = asyncio.run(run_cmd([str(XRAY_PATH), "x25519"]))
-                if result["code"] == 0:
-                    # Parse output lines (expect "PrivateKey: <...>" etc.)
-                    priv = ""
-                    pub = ""
-                    for line in result["stdout"].splitlines():
-                        if "PrivateKey" in line:
-                            priv = line.split(":",1)[1].strip()
-                        if "PublicKey" in line:
-                            pub = line.split(":",1)[1].strip()
-                    rs["privateKey"] = priv
-                    rs["publicKey"] = pub
+            # Get the inbound_id to find the source inbound for persistent keys
+            inbound_tag = inbound.get("tag", "")
+            inbound_id = inbound_tag.replace("inbound-", "") if inbound_tag.startswith("inbound-") else ""
+            
+            # Check if keys already exist in the source inbound (persistent storage)
+            source_ib = INBOUNDS.get(inbound_id, {})
+            source_rs = source_ib.get("reality_settings", {})
+            
+            if not rs.get("privateKey") or not rs.get("publicKey"):
+                # Try to use persisted keys first
+                if source_rs.get("private_key") and source_rs.get("public_key"):
+                    rs["privateKey"] = source_rs.get("private_key")
+                    rs["publicKey"] = source_rs.get("public_key")
                 else:
-                    logger.warning("Failed to generate X25519 keys for reality inbound")
+                    # Generate X25519 key pair using Xray binary
+                    result = asyncio.run(run_cmd([str(XRAY_PATH), "x25519"]))
+                    if result["code"] == 0:
+                        # Parse output lines (expect "PrivateKey: <...>" etc.)
+                        priv = ""
+                        pub = ""
+                        for line in result["stdout"].splitlines():
+                            if "PrivateKey" in line:
+                                priv = line.split(":", 1)[1].strip()
+                            if "PublicKey" in line:
+                                pub = line.split(":", 1)[1].strip()
+                        if priv and pub:
+                            rs["privateKey"] = priv
+                            rs["publicKey"] = pub
+                            # Persist keys back to source inbound
+                            if inbound_id and inbound_id in INBOUNDS:
+                                INBOUNDS[inbound_id].setdefault("reality_settings", {})["private_key"] = priv
+                                INBOUNDS[inbound_id]["reality_settings"]["public_key"] = pub
+                    else:
+                        logger.warning("Failed to generate X25519 keys for reality inbound")
+            
             if not rs.get("shortIds"):
-                import secrets
-                rs["shortIds"] = [secrets.token_hex(4)]
+                # Try to use persisted shortId first
+                if source_rs.get("short_id"):
+                    rs["shortIds"] = [source_rs.get("short_id")]
+                else:
+                    import secrets
+                    short_id = secrets.token_hex(4)  # 8-char hex
+                    rs["shortIds"] = [short_id]
+                    # Persist shortId back to source inbound
+                    if inbound_id and inbound_id in INBOUNDS:
+                        INBOUNDS[inbound_id].setdefault("reality_settings", {})["short_id"] = short_id
     # Return the built config
     return config
 

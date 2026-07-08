@@ -386,7 +386,27 @@ async def startup():
         limits=limits, timeout=timeout, follow_redirects=True, trust_env=False,
     )
     await load_state()
-    # Initialize Xray Core (install if missing, start if auto-start enabled)
+    
+    # CRITICAL: Validate Xray binary exists and works before starting service
+    from xray_core import is_xray_installed, XRAY_PATH
+    import os
+    if not await is_xray_installed():
+        # If binary doesn't exist, fail startup immediately with clear error
+        error_msg = f"Xray Core binary not found at {XRAY_PATH}. Build failed: Xray installation missing."
+        logger.critical(error_msg)
+        raise RuntimeError(error_msg)
+    
+    # Verify xray version command works
+    from xray_core import get_xray_version
+    version = await get_xray_version()
+    if not version:
+        error_msg = f"Xray binary at {XRAY_PATH} is not executable or corrupted."
+        logger.critical(error_msg)
+        raise RuntimeError(error_msg)
+    
+    logger.info(f"Xray Core validated: version {version} at {XRAY_PATH}")
+    
+    # Initialize Xray Core (start if auto-start enabled)
     try:
         await initialize_xray()
     except Exception as e:
@@ -499,19 +519,19 @@ def generate_vless_link(uuid: str, remark: str = "Spider", inbound_id: str | Non
         rs = inbound.get("reality_settings", {})
         # Required fields validation – if missing, raise clear error
         missing = []
-        if not rs.get("privateKey"):
+        # Use private_key/public_key from inbound config (persisted)
+        if not rs.get("private_key") and not rs.get("public_key"):
             missing.append("pbk")
-        if not rs.get("shortIds"):
+        if not rs.get("short_id"):
             missing.append("sid")
         if not rs.get("sni") and not rs.get("serverNames"):
             missing.append("sni")
         if missing:
             raise ValueError(f"Reality configuration incomplete: missing {', '.join(missing)}")
-        params["pbk"] = rs.get("privateKey", "")
-        # shortIds is a list – take first element
-        short_ids = rs.get("shortIds", [])
-        params["sid"] = short_ids[0] if short_ids else ""
-        params["spx"] = quote(rs.get("spiderX", "/"))
+        # Use the persisted keys for the link
+        params["pbk"] = rs.get("public_key", "")  # PublicKey goes to pbk
+        params["sid"] = rs.get("short_id", "")
+        params["spx"] = quote(rs.get("spiderx", "/"))
 
     # Build query string, skipping empty values
     query = "&".join(f"{k}={quote(str(v))}" for k, v in params.items() if v)
